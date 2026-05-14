@@ -29,6 +29,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
 
 type TextureEntry = {
   texture: GPUTexture;
+  version: number;
 };
 
 export class WebGPUTileRenderer implements PaintRenderer {
@@ -138,9 +139,7 @@ export class WebGPUTileRenderer implements PaintRenderer {
       throw new Error("WebGPU non supportato.");
     }
 
-    const adapter = await navigator.gpu.requestAdapter({
-      powerPreference: "high-performance",
-    });
+    const adapter = await navigator.gpu.requestAdapter();
 
     if (!adapter) {
       throw new Error("WebGPU adapter non disponibile.");
@@ -315,7 +314,12 @@ export class WebGPUTileRenderer implements PaintRenderer {
 
   private uploadTileTexture(tile: TileCoord, canvas: HTMLCanvasElement): GPUTexture {
     const key = textureKey(tile);
+    const version = this.store.getCompositeTileVersion(tile);
     const cached = this.textureCache.get(key);
+
+    if (cached && cached.version === version) {
+      return cached.texture;
+    }
 
     if (cached) {
       this.device.queue.copyExternalImageToTexture(
@@ -323,13 +327,14 @@ export class WebGPUTileRenderer implements PaintRenderer {
         { texture: cached.texture },
         { height: canvas.height, width: canvas.width }
       );
+      cached.version = version;
       return cached.texture;
     }
 
     const texture = this.device.createTexture({
       format: "rgba8unorm",
       size: [canvas.width, canvas.height],
-      usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING,
+      usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
 
     this.device.queue.copyExternalImageToTexture(
@@ -337,7 +342,7 @@ export class WebGPUTileRenderer implements PaintRenderer {
       { texture },
       { height: canvas.height, width: canvas.width }
     );
-    this.textureCache.set(key, { texture });
+    this.textureCache.set(key, { texture, version });
     return texture;
   }
 }

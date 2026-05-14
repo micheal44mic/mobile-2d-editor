@@ -19,6 +19,7 @@ export class TileStore {
   readonly tileSize: number;
 
   private readonly compositeTiles = new Map<string, HTMLCanvasElement>();
+  private readonly compositeVersions = new Map<string, number>();
   private readonly dirtyCompositeTiles = new Set<string>();
   private readonly layers = new Map<number, RasterLayer>();
   private readonly layerOrder: number[] = [];
@@ -73,6 +74,10 @@ export class TileStore {
     }
 
     return this.ensureCompositeTile(tile);
+  }
+
+  getCompositeTileVersion(tile: TileCoord): number {
+    return this.compositeVersions.get(tileKey(tile)) ?? 0;
   }
 
   getDiagnostics(renderScale: number, backend: "webgpu" | "canvas2d", visibleTiles: number): RendererDiagnostics {
@@ -315,7 +320,10 @@ export class TileStore {
     }
 
     context.globalAlpha = 1;
-    this.dirtyCompositeTiles.delete(tileKey(tile));
+    const key = tileKey(tile);
+
+    this.compositeVersions.set(key, (this.compositeVersions.get(key) ?? 0) + 1);
+    this.dirtyCompositeTiles.delete(key);
   }
 
   private tileColumns(): number {

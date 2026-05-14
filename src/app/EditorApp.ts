@@ -43,7 +43,7 @@ export class EditorApp {
   private readonly rendererLabel: HTMLElement;
   private readonly zoomLabel: HTMLElement;
 
-  private brushSize = 22;
+  private brushSize = 72;
   private camera: Camera = { x: 0, y: 0, zoom: 1 };
   private core!: PaintCore;
   private gesture: Gesture = null;
@@ -433,8 +433,8 @@ export class EditorApp {
 
           <div class="bottom-strip" aria-label="Grandezza pennello">
             <button class="tool-button" type="button" data-brush-size-down aria-label="Riduci pennello">-</button>
-            <input class="control-range" data-brush-size-range type="range" min="1" max="256" value="22" aria-label="Grandezza pennello in pixel">
-            <span class="status-pill brush-size-label" data-brush-size-label>22 px</span>
+            <input class="control-range" data-brush-size-range type="range" min="1" max="256" value="72" aria-label="Grandezza pennello in pixel">
+            <span class="status-pill brush-size-label" data-brush-size-label>72 px</span>
             <button class="tool-button" type="button" data-brush-size-up aria-label="Aumenta pennello">+</button>
           </div>
 

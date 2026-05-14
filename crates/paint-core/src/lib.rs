@@ -28,7 +28,7 @@ struct BrushSettings {
 impl Default for BrushSettings {
     fn default() -> Self {
         Self {
-            diameter: 22.0,
+            diameter: 72.0,
             flow: 0.42,
             max_stamps_per_move: 96,
             min_spacing: 2.4,
