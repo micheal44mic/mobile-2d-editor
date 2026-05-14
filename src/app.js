@@ -24,6 +24,7 @@ const PERF_UI_INTERVAL = 300;
 const LONG_TASK_MS = 50;
 
 const canvas = document.querySelector("[data-editor-viewport]");
+const brushToggleButton = document.querySelector("[data-brush-toggle]");
 const imageInput = document.querySelector("[data-image-input]");
 const imageStatusLabel = document.querySelector("[data-image-status]");
 const imageUploadButton = document.querySelector("[data-image-upload]");
@@ -46,6 +47,9 @@ const state = {
     vy: 0,
     vz: 0,
   },
+  activeBrushPointerId: null,
+  brushEngine: null,
+  brushLayer: null,
   gesture: null,
   hasViewport: false,
   imageLayer: null,
@@ -62,6 +66,7 @@ const state = {
     max: 1,
     min: 1,
   },
+  tool: "brush",
   wheelAnchor: null,
   zoomSettleAnchor: null,
 };
@@ -184,8 +189,9 @@ function estimateLayerBytes() {
   const imageBytes = state.imageLayer
     ? Math.round(state.imageLayer.width * state.imageLayer.height * 4)
     : 0;
+  const brushBytes = state.brushLayer?.memoryBytes || 0;
 
-  return baseBytes + imageBytes;
+  return baseBytes + imageBytes + brushBytes;
 }
 
 function recordInputForPerf(event) {
@@ -288,7 +294,7 @@ function updatePerfPanel(now = performance.now()) {
   const storageQuota = perf.storage.quota ? formatBytes(perf.storage.quota) : "n/d";
   const storageUsage = perf.storage.quota ? formatBytes(perf.storage.usage) : "n/d";
   const longTaskP95 = percentile(ringValues(perf.longTasks), 95);
-  const layerCount = state.imageLayer ? 2 : 1;
+  const layerCount = 1 + (state.imageLayer ? 1 : 0) + (state.brushLayer ? 1 : 0);
 
   updateFrameBudget(frameP50);
 
@@ -518,6 +524,36 @@ function getPreferredPreview(layer) {
   return previews.find((preview) => preview.longest >= neededLongest) || previews[previews.length - 1];
 }
 
+function initBrushes() {
+  const brushes = window.Mobile2DBrushes;
+
+  if (!brushes?.BrushLayer || !brushes?.BrushEngine || !brushes?.getBrushPreset) {
+    console.warn("Brush modules non disponibili.");
+    return;
+  }
+
+  state.brushLayer = new brushes.BrushLayer(DOCUMENT.width, DOCUMENT.height);
+  state.brushEngine = new brushes.BrushEngine({
+    layer: state.brushLayer,
+    preset: brushes.getBrushPreset("grainPencil"),
+  });
+}
+
+function setTool(tool) {
+  state.tool = tool;
+
+  if (brushToggleButton) {
+    const isBrush = tool === "brush";
+
+    brushToggleButton.classList.toggle("is-active", isBrush);
+    brushToggleButton.setAttribute("aria-pressed", String(isBrush));
+  }
+}
+
+function toggleBrushTool() {
+  setTool(state.tool === "brush" ? "pan" : "brush");
+}
+
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
@@ -726,6 +762,39 @@ function beginPan(point) {
   };
 }
 
+function getBrushPressure(event) {
+  return event.pressure && event.pressure > 0 ? event.pressure : 0.5;
+}
+
+function beginBrushStroke(event, point) {
+  if (!state.brushEngine) {
+    beginPan(point);
+    return;
+  }
+
+  state.activeBrushPointerId = event.pointerId;
+  state.gesture = {
+    pointerId: event.pointerId,
+    type: "brush",
+  };
+  state.brushEngine.begin(screenToDocument(point), getBrushPressure(event));
+  scheduleRender();
+}
+
+function moveBrushStroke(event, point) {
+  if (!state.brushEngine || state.gesture?.type !== "brush" || state.gesture.pointerId !== event.pointerId) {
+    return;
+  }
+
+  state.brushEngine.move(screenToDocument(point), getBrushPressure(event));
+  scheduleRender();
+}
+
+function endBrushStroke() {
+  state.brushEngine?.end();
+  state.activeBrushPointerId = null;
+}
+
 function beginPinch() {
   const [first, second] = getActivePointers();
 
@@ -754,13 +823,26 @@ function handlePointerDown(event) {
   state.wheelAnchor = null;
   state.isInteracting = true;
   canvas.classList.add("is-dragging");
-  state.pointers.set(event.pointerId, getPointerPoint(event));
+  const point = getPointerPoint(event);
+
+  state.pointers.set(event.pointerId, point);
+
+  if (state.gesture?.type === "brush" && state.pointers.size >= 2) {
+    endBrushStroke();
+    beginPinch();
+    return;
+  }
 
   if (state.pointers.size >= 2) {
     beginPinch();
   } else {
     state.zoomSettleAnchor = null;
-    beginPan(getPointerPoint(event));
+
+    if (state.tool === "brush") {
+      beginBrushStroke(event, point);
+    } else {
+      beginPan(point);
+    }
   }
 }
 
@@ -771,7 +853,20 @@ function handlePointerMove(event) {
 
   recordInputForPerf(event);
   event.preventDefault();
-  state.pointers.set(event.pointerId, getPointerPoint(event));
+  const point = getPointerPoint(event);
+
+  state.pointers.set(event.pointerId, point);
+
+  if (state.gesture?.type === "brush") {
+    if (state.pointers.size >= 2) {
+      endBrushStroke();
+      beginPinch();
+      return;
+    }
+
+    moveBrushStroke(event, point);
+    return;
+  }
 
   if (state.pointers.size >= 2) {
     if (state.gesture?.type !== "pinch") {
@@ -792,11 +887,10 @@ function handlePointerMove(event) {
   }
 
   if (state.gesture?.type !== "pan") {
-    beginPan(getPointerPoint(event));
+    beginPan(point);
     return;
   }
 
-  const point = getPointerPoint(event);
   const dx = point.x - state.gesture.lastX;
   const dy = point.y - state.gesture.lastY;
 
@@ -810,12 +904,23 @@ function handlePointerMove(event) {
 }
 
 function finishPointer(event) {
+  const wasBrushStroke = state.gesture?.type === "brush" && state.gesture.pointerId === event.pointerId;
+
   if (state.pointers.has(event.pointerId)) {
     state.pointers.delete(event.pointerId);
   }
 
   if (canvas.hasPointerCapture?.(event.pointerId)) {
     canvas.releasePointerCapture(event.pointerId);
+  }
+
+  if (wasBrushStroke) {
+    endBrushStroke();
+    state.gesture = null;
+    state.isInteracting = false;
+    canvas.classList.remove("is-dragging");
+    scheduleRender();
+    return;
   }
 
   if (state.pointers.size >= 2) {
@@ -1028,6 +1133,24 @@ function drawImageLayer(ctx, layer) {
   ctx.restore();
 }
 
+function drawBrushLayer(ctx) {
+  if (!state.brushLayer) {
+    return;
+  }
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(
+    state.camera.x,
+    state.camera.y,
+    DOCUMENT.width * state.camera.zoom,
+    DOCUMENT.height * state.camera.zoom
+  );
+  ctx.clip();
+  state.brushLayer.drawTo(ctx, state.camera);
+  ctx.restore();
+}
+
 function drawDocument(ctx) {
   const { x, y, zoom } = state.camera;
   const width = DOCUMENT.width * zoom;
@@ -1051,6 +1174,8 @@ function drawDocument(ctx) {
     drawImageLayer(ctx, state.imageLayer);
     ctx.restore();
   }
+
+  drawBrushLayer(ctx);
 
   ctx.save();
   ctx.strokeStyle = "rgba(15, 23, 42, 0.16)";
@@ -1124,6 +1249,7 @@ function bindEvents() {
   canvas.addEventListener("wheel", handleWheel, { passive: false });
   window.addEventListener("resize", resize, { passive: true });
   resetButton?.addEventListener("click", centerCamera);
+  brushToggleButton?.addEventListener("click", toggleBrushTool);
   imageUploadButton?.addEventListener("click", () => imageInput?.click());
   imageInput?.addEventListener("change", handleImageInputChange);
   zoomInButton?.addEventListener("click", () => stepZoom(1));
@@ -1141,6 +1267,8 @@ function init() {
   }
 
   bindEvents();
+  initBrushes();
+  setTool("brush");
   resize();
   centerCamera();
   updateImageStatus();

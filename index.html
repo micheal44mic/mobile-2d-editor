@@ -16,6 +16,9 @@
           <span class="status-pill" data-zoom-label>100%</span>
           <span class="status-pill" data-image-status hidden></span>
           <input class="file-input" data-image-input type="file" accept="image/*" aria-label="Carica immagine">
+          <button class="icon-button is-active" type="button" data-brush-toggle aria-label="Pennello" aria-pressed="true">
+            <span aria-hidden="true">✎</span>
+          </button>
           <button class="icon-button" type="button" data-image-upload aria-label="Carica immagine">
             <span aria-hidden="true">＋</span>
           </button>
@@ -34,6 +37,9 @@
       </section>
     </main>
 
+    <script defer src="./src/brush-presets.js"></script>
+    <script defer src="./src/brush-textures.js"></script>
+    <script defer src="./src/brush-engine.js"></script>
     <script defer src="./src/app.js"></script>
   </body>
 </html>
