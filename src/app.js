@@ -13,6 +13,7 @@ const WHEEL_SENSITIVITY = 0.00145;
 const WHEEL_DELTA_LIMIT = 70;
 const WHEEL_SETTLE_DELAY = 80;
 const HOME_ZOOM_SNAP_RATIO = 1.015;
+const ZOOM_LIMIT_EPSILON = 0.0001;
 const PREVIEW_LONG_EDGES = Object.freeze([256, 512, 1024, 1536, 2048, 3072]);
 const MOBILE_PREVIEW_CAP = 2048;
 const DESKTOP_PREVIEW_CAP = 3072;
@@ -546,17 +547,12 @@ function rubberDelta(delta, scale, minLimit = 24) {
 
 function rubberClampZoom(value) {
   const minRubber = Math.max(0.02, state.zoomBounds.min * 0.12);
-  const maxRubber = Math.max(0.025, state.zoomBounds.max * 0.045);
 
   if (value < state.zoomBounds.min) {
     return state.zoomBounds.min - rubberDelta(state.zoomBounds.min - value, state.zoomBounds.min, minRubber);
   }
 
-  if (value > state.zoomBounds.max) {
-    return state.zoomBounds.max + rubberDelta(value - state.zoomBounds.max, state.zoomBounds.max, maxRubber);
-  }
-
-  return value;
+  return Math.min(value, state.zoomBounds.max);
 }
 
 function cameraFromZoomAnchor(anchor, zoom) {
@@ -671,6 +667,18 @@ function screenToDocument(point, camera = state.camera) {
 }
 
 function zoomAt(point, requestedZoom, options = {}) {
+  if (
+    requestedZoom > state.zoomBounds.max &&
+    state.camera.zoom >= state.zoomBounds.max - ZOOM_LIMIT_EPSILON
+  ) {
+    state.camera.zoom = state.zoomBounds.max;
+    state.camera.vz = 0;
+    state.zoomSettleAnchor = null;
+    scheduleRender();
+    updateZoomUi();
+    return;
+  }
+
   const anchor = options.anchor || createZoomAnchor(point);
   const zoom = options.elastic === false
     ? clamp(requestedZoom, state.zoomBounds.min, state.zoomBounds.max)
@@ -770,15 +778,12 @@ function handlePointerMove(event) {
     const center = getCenter(first, second);
     const distance = Math.max(1, getDistance(first, second));
     const rawZoom = state.gesture.startCamera.zoom * (distance / state.gesture.distance);
-    const zoom = rubberClampZoom(rawZoom);
     const anchor = {
       document: state.gesture.documentPoint,
       screen: center,
     };
-    const next = cameraFromZoomAnchor(anchor, zoom);
 
-    state.zoomSettleAnchor = anchor;
-    setCamera(next);
+    zoomAt(center, rawZoom, { anchor });
     return;
   }
 
@@ -854,7 +859,7 @@ function handleWheel(event) {
   zoomAt(point, state.camera.zoom * factor, { anchor });
   window.clearTimeout(handleWheel.settleTimer);
   handleWheel.settleTimer = window.setTimeout(() => {
-    snapHomeOrSettleCamera(anchor);
+    snapHomeOrSettleCamera(state.zoomSettleAnchor);
     state.wheelAnchor = null;
     state.zoomSettleAnchor = null;
   }, WHEEL_SETTLE_DELAY);
