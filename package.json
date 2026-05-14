@@ -1,8 +1,19 @@
 {
   "name": "mobile-2d-editor",
   "private": true,
+  "type": "module",
   "scripts": {
-    "test": "node --test",
-    "check": "node --check src/app.js && node --check src/brushes/brush-engine.js && node --check src/brushes/brush-presets.js && node --check src/brushes/brush-textures.js"
+    "build": "npm run build:wasm && tsc --noEmit && vite build",
+    "build:wasm": "wasm-pack build crates/paint-core --target web --out-dir ../../src/generated/paint-core --release",
+    "check": "npm run build:wasm && tsc --noEmit",
+    "dev": "npm run build:wasm && vite --host 127.0.0.1",
+    "test": "npm run test:rust && npm run test:js",
+    "test:js": "node --test tests/*.test.js",
+    "test:rust": "cargo test --manifest-path crates/paint-core/Cargo.toml"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.64",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.6"
   }
 }
