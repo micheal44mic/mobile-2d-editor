@@ -11,6 +11,8 @@ const SETTLE_FRICTION = 0.72;
 const ZOOM_BUTTON_STEP = 1.12;
 const WHEEL_SENSITIVITY = 0.00145;
 const WHEEL_DELTA_LIMIT = 70;
+const WHEEL_SETTLE_DELAY = 80;
+const HOME_ZOOM_SNAP_RATIO = 1.015;
 const PREVIEW_LONG_EDGES = Object.freeze([256, 512, 1024, 1536, 2048, 3072]);
 const MOBILE_PREVIEW_CAP = 2048;
 const DESKTOP_PREVIEW_CAP = 3072;
@@ -611,6 +613,19 @@ function centerCamera() {
   setCamera({ x, y, zoom }, { elastic: false });
 }
 
+function shouldSnapHome(camera = state.camera) {
+  return camera.zoom <= state.zoomBounds.min * HOME_ZOOM_SNAP_RATIO;
+}
+
+function snapHomeOrSettleCamera() {
+  if (shouldSnapHome()) {
+    centerCamera();
+    return;
+  }
+
+  settleCamera();
+}
+
 function settleCamera() {
   cancelAnimationFrame(state.settleRaf);
 
@@ -816,7 +831,7 @@ function finishPointer(event) {
   state.gesture = null;
   state.isInteracting = false;
   canvas.classList.remove("is-dragging");
-  settleCamera();
+  snapHomeOrSettleCamera();
 }
 
 function handleWheel(event) {
@@ -835,7 +850,7 @@ function handleWheel(event) {
 
   zoomAt(point, state.camera.zoom * factor);
   window.clearTimeout(handleWheel.settleTimer);
-  handleWheel.settleTimer = window.setTimeout(settleCamera, 120);
+  handleWheel.settleTimer = window.setTimeout(snapHomeOrSettleCamera, WHEEL_SETTLE_DELAY);
 }
 
 function setZoomByNormalized(value) {
@@ -851,7 +866,7 @@ function setZoomByNormalized(value) {
   };
 
   zoomAt(point, zoom, { elastic: false });
-  settleCamera();
+  snapHomeOrSettleCamera();
 }
 
 function stepZoom(direction) {
@@ -866,7 +881,7 @@ function stepZoom(direction) {
   };
 
   zoomAt(point, state.camera.zoom * factor);
-  settleCamera();
+  snapHomeOrSettleCamera();
 }
 
 function setImageStatus(text) {
