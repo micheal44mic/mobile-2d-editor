@@ -10,6 +10,8 @@
       grainDensity: 0.58,
       grainSeed: 41,
       hardness: 0.68,
+      maxStampsPerMove: 48,
+      minSpacing: 2.4,
       name: "Grain pencil",
       pressureOpacity: 0.62,
       pressureSize: 0.22,

@@ -23,6 +23,7 @@ const IMAGE_LAYER_MAX_DOCUMENT_RATIO = 0.84;
 const PERF_ENABLED = new URLSearchParams(window.location.search).has("perf");
 const PERF_RING_SIZE = 1000;
 const PERF_UI_INTERVAL = 300;
+const PERF_FRAME_BUDGET = 16.7;
 const LONG_TASK_MS = 50;
 
 const canvas = document.querySelector("[data-editor-viewport]");
@@ -109,7 +110,7 @@ function createPerfState() {
     dirtyPixels: createRing(PERF_RING_SIZE),
     droppedFrames: 0,
     enabled: PERF_ENABLED,
-    frameBudget: 16.7,
+    frameBudget: PERF_FRAME_BUDGET,
     frameTimes: createRing(PERF_RING_SIZE),
     importTimes: createRing(64),
     inputLatencies: createRing(PERF_RING_SIZE),
@@ -264,14 +265,6 @@ function scheduleStoragePerfUpdate() {
   });
 }
 
-function updateFrameBudget(frameP50) {
-  if (!frameP50) {
-    return;
-  }
-
-  perf.frameBudget = frameP50 < 12 ? 8.3 : 16.7;
-}
-
 function updatePerfPanel(now = performance.now()) {
   if (!perf.enabled || !perfPanel || now - perf.lastUiAt < PERF_UI_INTERVAL) {
     return;
@@ -285,7 +278,6 @@ function updatePerfPanel(now = performance.now()) {
   const inputLatencies = ringValues(perf.inputLatencies);
   const importTimes = ringValues(perf.importTimes);
   const dirtyPixels = ringValues(perf.dirtyPixels);
-  const frameP50 = percentile(frameTimes, 50);
   const frameP95 = percentile(frameTimes, 95);
   const inputP95 = percentile(inputLatencies, 95);
   const inputP99 = percentile(inputLatencies, 99);
@@ -300,8 +292,6 @@ function updatePerfPanel(now = performance.now()) {
   const storageUsage = perf.storage.quota ? formatBytes(perf.storage.usage) : "n/d";
   const longTaskP95 = percentile(ringValues(perf.longTasks), 95);
   const layerCount = 1 + (state.imageLayer ? 1 : 0) + (state.brushLayer ? 1 : 0);
-
-  updateFrameBudget(frameP50);
 
   perfPanel.textContent = [
     "PERF ?perf=1",
@@ -319,7 +309,7 @@ function updatePerfPanel(now = performance.now()) {
     "Undo memory: 0 MB",
     `Storage: ${storageUsage} / ${storageQuota}`,
     `Long tasks: ${perf.longTaskCount} p95 ${formatMs(longTaskP95)}`,
-    `Dropped frames: ${perf.droppedFrames}`,
+    `Dropped frames 60Hz: ${perf.droppedFrames}`,
   ].join("\n");
 }
 
@@ -354,7 +344,7 @@ function startPerfMonitor() {
 
       ringPush(perf.frameTimes, frameTime);
 
-      if (frameTime > perf.frameBudget * 1.5) {
+      if (frameTime < 250 && frameTime > perf.frameBudget * 1.75) {
         perf.droppedFrames += Math.max(1, Math.round(frameTime / perf.frameBudget) - 1);
       }
     }
@@ -1106,14 +1096,8 @@ function resize() {
   scheduleRender();
 }
 
-function drawChecker(ctx, x, y, width, height, zoom) {
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(x, y, width, height);
-  ctx.clip();
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(x, y, width, height);
-  ctx.restore();
+function isCameraMoving() {
+  return state.isInteracting || state.settleRaf !== 0;
 }
 
 function drawImageLayer(ctx, layer) {
@@ -1126,10 +1110,10 @@ function drawImageLayer(ctx, layer) {
 
   ctx.save();
   ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = state.isInteracting ? "medium" : "high";
+  ctx.imageSmoothingQuality = isCameraMoving() ? "medium" : "high";
   ctx.drawImage(preview.bitmap, targetX, targetY, targetWidth, targetHeight);
 
-  if (!state.isInteracting) {
+  if (!isCameraMoving()) {
     ctx.strokeStyle = "rgba(16, 17, 15, 0.18)";
     ctx.lineWidth = 1;
     ctx.strokeRect(targetX + 0.5, targetY + 0.5, targetWidth - 1, targetHeight - 1);
@@ -1139,7 +1123,7 @@ function drawImageLayer(ctx, layer) {
 }
 
 function drawBrushLayer(ctx) {
-  if (!state.brushLayer) {
+  if (!state.brushLayer || state.brushLayer.isEmpty) {
     return;
   }
 
@@ -1162,14 +1146,14 @@ function drawDocument(ctx) {
   const height = DOCUMENT.height * zoom;
 
   ctx.save();
-  ctx.shadowColor = "rgba(15, 23, 42, 0.16)";
-  ctx.shadowBlur = 26;
-  ctx.shadowOffsetY = 14;
+  if (!isCameraMoving()) {
+    ctx.shadowColor = "rgba(15, 23, 42, 0.16)";
+    ctx.shadowBlur = 26;
+    ctx.shadowOffsetY = 14;
+  }
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(x, y, width, height);
   ctx.restore();
-
-  drawChecker(ctx, x, y, width, height, zoom);
 
   if (state.imageLayer) {
     ctx.save();

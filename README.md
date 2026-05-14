@@ -14,3 +14,5 @@ Prototype leggero di editor 2D mobile-first.
 - Brush separati in file dedicati: preset, texture/grain/shape ed engine/layer.
 - Primo brush grain pencil: un dito disegna, due dita muovono/zoomano la vista.
 - Controlli inferiori dedicati alla grandezza del brush in pixel.
+- Rendering brush ottimizzato: salta il layer vuoto e ridisegna solo bounds/tile con contenuto.
+- Dropped frame misurati su target 60Hz per debug mobile più leggibile.
