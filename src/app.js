@@ -1,9 +1,9 @@
 const VIEW_MARGIN = 50;
 const DOCUMENT = Object.freeze({
-  height: 1536,
-  width: 1536,
+  height: 4096,
+  width: 4096,
 });
-const MAX_ZOOM_MULTIPLIER = 8;
+const MAX_ZOOM_MULTIPLIER = 16;
 const MAX_ZOOM_ABSOLUTE = 5;
 const SETTLE_EPSILON = 0.02;
 const SETTLE_STIFFNESS = 0.22;
@@ -16,15 +16,24 @@ const ZOOM_LIMIT_EPSILON = 0.0001;
 const MIN_BRUSH_SIZE = 1;
 const MAX_BRUSH_SIZE = 128;
 const BRUSH_SIZE_STEP = 1;
-const PREVIEW_LONG_EDGES = Object.freeze([256, 512, 1024, 1536, 2048, 3072]);
+const PREVIEW_LONG_EDGES = Object.freeze([256, 512, 1024, 1536, 2048, 3072, 4096]);
 const MOBILE_PREVIEW_CAP = 2048;
-const DESKTOP_PREVIEW_CAP = 3072;
+const DESKTOP_PREVIEW_CAP = 4096;
 const IMAGE_LAYER_MAX_DOCUMENT_RATIO = 0.84;
 const PERF_ENABLED = new URLSearchParams(window.location.search).has("perf");
 const PERF_RING_SIZE = 1000;
 const PERF_UI_INTERVAL = 300;
 const PERF_FRAME_BUDGET = 16.7;
 const LONG_TASK_MS = 50;
+const QUALITY_ADJUST_INTERVAL = 500;
+const QUALITY_FAST_FRAME_MS = 10;
+const QUALITY_FRAME_BUDGET = 16.7;
+const QUALITY_MAX_SCALE = 1;
+const QUALITY_MIN_SCALE = 0.65;
+const QUALITY_RECOVERY_IDLE_MS = 900;
+const QUALITY_SLOW_FRAME_MS = 18.5;
+const QUALITY_STEP_DOWN = 0.1;
+const QUALITY_STEP_UP = 0.05;
 
 const canvas = document.querySelector("[data-editor-viewport]");
 const brushSizeDownButton = document.querySelector("[data-brush-size-down]");
@@ -60,6 +69,14 @@ const state = {
   imageLayer: null,
   isInteracting: false,
   pointers: new Map(),
+  quality: {
+    fastFrames: 0,
+    lastAdjustAt: 0,
+    lastFrameAt: 0,
+    lastInteractionAt: 0,
+    renderScale: 1,
+    slowFrames: 0,
+  },
   raf: 0,
   settleRaf: 0,
   size: {
@@ -200,7 +217,13 @@ function estimateLayerBytes() {
   return baseBytes + imageBytes + brushBytes;
 }
 
+function markInteraction() {
+  state.quality.lastInteractionAt = performance.now();
+}
+
 function recordInputForPerf(event) {
+  markInteraction();
+
   if (!perf.enabled) {
     return;
   }
@@ -302,6 +325,7 @@ function updatePerfPanel(now = performance.now()) {
     `Composite p95: ${formatMs(compositeP95)}`,
     `Image import last: ${importLast ? formatMs(importLast) : "n/d"}`,
     `Dirty pixels/frame: ${formatNumber(dirtyAverage)} MP`,
+    `Render scale: ${Math.round(state.quality.renderScale * 100)}%`,
     `Layers: ${layerCount}`,
     `Layer estimate: ${formatBytes(estimateLayerBytes())}`,
     `Viewport canvas: ${formatBytes(estimateViewportBytes())}`,
@@ -367,9 +391,81 @@ function isMobileLike() {
 }
 
 function getRenderDpr() {
-  return isMobileLike()
+  const baseDpr = isMobileLike()
     ? 1
     : Math.min(1.5, Math.max(1, window.devicePixelRatio || 1));
+
+  return Math.max(0.5, baseDpr * state.quality.renderScale);
+}
+
+function syncCanvasBackingStore(width = state.size.width, height = state.size.height, dpr = getRenderDpr()) {
+  const pixelWidth = Math.max(1, Math.round(width * dpr));
+  const pixelHeight = Math.max(1, Math.round(height * dpr));
+
+  state.size = { dpr, height, width };
+
+  if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
+  }
+}
+
+function setRenderScale(scale) {
+  const nextScale = clamp(scale, QUALITY_MIN_SCALE, QUALITY_MAX_SCALE);
+
+  if (Math.abs(nextScale - state.quality.renderScale) < 0.001) {
+    return;
+  }
+
+  state.quality.renderScale = nextScale;
+  syncCanvasBackingStore();
+  scheduleRender();
+}
+
+function recordQualitySample(now, renderDuration, frameGap) {
+  if (!isMobileLike()) {
+    return;
+  }
+
+  const quality = state.quality;
+  const isSlowFrame =
+    renderDuration > QUALITY_SLOW_FRAME_MS ||
+    (frameGap > QUALITY_FRAME_BUDGET * 1.35 && frameGap < 250);
+  const isFastFrame =
+    renderDuration < QUALITY_FAST_FRAME_MS &&
+    (!frameGap || frameGap < QUALITY_FRAME_BUDGET * 1.12);
+
+  if (isSlowFrame) {
+    quality.slowFrames += 1;
+    quality.fastFrames = 0;
+  } else if (isFastFrame) {
+    quality.fastFrames += 1;
+    quality.slowFrames = Math.max(0, quality.slowFrames - 1);
+  }
+
+  if (now - quality.lastAdjustAt < QUALITY_ADJUST_INTERVAL) {
+    return;
+  }
+
+  quality.lastAdjustAt = now;
+
+  if (quality.slowFrames >= 2 && quality.renderScale > QUALITY_MIN_SCALE) {
+    quality.slowFrames = 0;
+    quality.fastFrames = 0;
+    setRenderScale(quality.renderScale - QUALITY_STEP_DOWN);
+    return;
+  }
+
+  if (
+    quality.fastFrames >= 8 &&
+    quality.renderScale < QUALITY_MAX_SCALE &&
+    !state.isInteracting &&
+    now - quality.lastInteractionAt > QUALITY_RECOVERY_IDLE_MS
+  ) {
+    quality.slowFrames = 0;
+    quality.fastFrames = 0;
+    setRenderScale(quality.renderScale + QUALITY_STEP_UP);
+  }
 }
 
 function getMaxPreviewLongEdge() {
@@ -590,7 +686,8 @@ function getFitZoom() {
 
 function updateZoomBounds() {
   const min = Math.max(0.02, getFitZoom());
-  const max = Math.max(min * 1.01, Math.min(MAX_ZOOM_ABSOLUTE, min * MAX_ZOOM_MULTIPLIER));
+  const desiredMax = Math.max(1, min * MAX_ZOOM_MULTIPLIER);
+  const max = Math.max(min * 1.01, Math.min(MAX_ZOOM_ABSOLUTE, desiredMax));
 
   state.zoomBounds = { max, min };
 }
@@ -754,14 +851,20 @@ function zoomAt(point, requestedZoom, options = {}) {
   setCamera(next);
 }
 
-function getPointerPoint(event) {
-  const rect = canvas.getBoundingClientRect();
-
+function getPointerPoint(event, rect = canvas.getBoundingClientRect()) {
   return {
     id: event.pointerId,
     x: event.clientX - rect.left,
     y: event.clientY - rect.top,
   };
+}
+
+function getBrushMoveEvents(event) {
+  const events = typeof event.getCoalescedEvents === "function"
+    ? event.getCoalescedEvents()
+    : [];
+
+  return events.length ? events : [event];
 }
 
 function getActivePointers() {
@@ -879,7 +982,8 @@ function handlePointerMove(event) {
 
   recordInputForPerf(event);
   event.preventDefault();
-  const point = getPointerPoint(event);
+  const rect = canvas.getBoundingClientRect();
+  const point = getPointerPoint(event, rect);
 
   state.pointers.set(event.pointerId, point);
 
@@ -890,7 +994,10 @@ function handlePointerMove(event) {
       return;
     }
 
-    moveBrushStroke(event, point);
+    for (const moveEvent of getBrushMoveEvents(event)) {
+      moveBrushStroke(moveEvent, getPointerPoint(moveEvent, rect));
+    }
+
     return;
   }
 
@@ -1058,19 +1165,12 @@ function resize() {
   const dpr = getRenderDpr();
   const width = Math.max(1, Math.round(rect.width));
   const height = Math.max(1, Math.round(rect.height));
-  const pixelWidth = Math.max(1, Math.round(width * dpr));
-  const pixelHeight = Math.max(1, Math.round(height * dpr));
   const previousMin = state.zoomBounds.min;
   const previousZoom = state.camera.zoom;
   const shouldCenter = !state.hasViewport;
 
-  state.size = { dpr, height, width };
+  syncCanvasBackingStore(width, height, dpr);
   state.hasViewport = true;
-
-  if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
-    canvas.width = pixelWidth;
-    canvas.height = pixelHeight;
-  }
 
   updateZoomBounds();
 
@@ -1136,7 +1236,7 @@ function drawBrushLayer(ctx) {
     DOCUMENT.height * state.camera.zoom
   );
   ctx.clip();
-  state.brushLayer.drawTo(ctx, state.camera);
+  state.brushLayer.drawTo(ctx, state.camera, state.size);
   ctx.restore();
 }
 
@@ -1173,11 +1273,14 @@ function drawDocument(ctx) {
   ctx.restore();
 }
 
-function render() {
+function render(timestamp = performance.now()) {
   state.raf = 0;
 
   const { dpr, height, width } = state.size;
-  const renderStart = perf.enabled ? performance.now() : 0;
+  const renderStart = performance.now();
+  const frameGap = state.quality.lastFrameAt ? timestamp - state.quality.lastFrameAt : 0;
+
+  state.quality.lastFrameAt = timestamp;
 
   context.setTransform(dpr, 0, 0, dpr, 0, 0);
   context.clearRect(0, 0, width, height);
@@ -1185,10 +1288,11 @@ function render() {
   context.fillRect(0, 0, width, height);
   const compositeStart = perf.enabled ? performance.now() : 0;
   drawDocument(context);
+  const end = performance.now();
+
+  recordQualitySample(end, end - renderStart, frameGap);
 
   if (perf.enabled) {
-    const end = performance.now();
-
     recordPerfMeasure("composite", end - compositeStart);
     recordPerfMeasure("render", end - renderStart);
     ringPush(perf.dirtyPixels, canvas.width * canvas.height);

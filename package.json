@@ -1,0 +1,8 @@
+{
+  "name": "mobile-2d-editor",
+  "private": true,
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check src/app.js && node --check src/brushes/brush-engine.js && node --check src/brushes/brush-presets.js && node --check src/brushes/brush-textures.js"
+  }
+}

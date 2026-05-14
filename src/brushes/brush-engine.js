@@ -28,6 +28,15 @@
     return bounds.minX <= bounds.maxX && bounds.minY <= bounds.maxY;
   }
 
+  function intersectRects(first, second) {
+    const minX = Math.max(first.minX, second.minX);
+    const minY = Math.max(first.minY, second.minY);
+    const maxX = Math.min(first.maxX, second.maxX);
+    const maxY = Math.min(first.maxY, second.maxY);
+
+    return { maxX, maxY, minX, minY };
+  }
+
   class BrushLayer {
     constructor(width, height) {
       this.width = width;
@@ -77,6 +86,27 @@
       }
     }
 
+    getViewportBounds(camera, viewport = null) {
+      if (!viewport) {
+        return {
+          maxX: this.width,
+          maxY: this.height,
+          minX: 0,
+          minY: 0,
+        };
+      }
+
+      const viewportWidth = viewport.width || this.width;
+      const viewportHeight = viewport.height || this.height;
+
+      return {
+        maxX: clamp(Math.ceil((viewportWidth - camera.x) / camera.zoom), 0, this.width),
+        maxY: clamp(Math.ceil((viewportHeight - camera.y) / camera.zoom), 0, this.height),
+        minX: clamp(Math.floor(-camera.x / camera.zoom), 0, this.width),
+        minY: clamp(Math.floor(-camera.y / camera.zoom), 0, this.height),
+      };
+    }
+
     drawSourceRect(context, camera, sourceX, sourceY, sourceWidth, sourceHeight) {
       if (sourceWidth <= 0 || sourceHeight <= 0) {
         return;
@@ -95,33 +125,71 @@
       );
     }
 
-    drawTiles(context, camera) {
-      for (const tileIndex of this.contentTiles) {
-        const tileY = Math.floor(tileIndex / this.tilesX);
-        const tileX = tileIndex - tileY * this.tilesX;
-        const sourceX = tileX * this.tileSize;
-        const sourceY = tileY * this.tileSize;
-        const sourceWidth = Math.min(this.tileSize, this.width - sourceX);
-        const sourceHeight = Math.min(this.tileSize, this.height - sourceY);
+    drawTiles(context, camera, bounds) {
+      const startTileX = Math.floor(bounds.minX / this.tileSize);
+      const startTileY = Math.floor(bounds.minY / this.tileSize);
+      const endTileX = Math.floor((bounds.maxX - 1) / this.tileSize);
+      const endTileY = Math.floor((bounds.maxY - 1) / this.tileSize);
 
-        this.drawSourceRect(context, camera, sourceX, sourceY, sourceWidth, sourceHeight);
+      for (let tileY = startTileY; tileY <= endTileY; tileY += 1) {
+        for (let tileX = startTileX; tileX <= endTileX; tileX += 1) {
+          const tileIndex = tileY * this.tilesX + tileX;
+
+          if (!this.contentTiles.has(tileIndex)) {
+            continue;
+          }
+
+          const sourceX = Math.max(tileX * this.tileSize, bounds.minX);
+          const sourceY = Math.max(tileY * this.tileSize, bounds.minY);
+          const tileMaxX = Math.min((tileX + 1) * this.tileSize, this.width, bounds.maxX);
+          const tileMaxY = Math.min((tileY + 1) * this.tileSize, this.height, bounds.maxY);
+          const sourceWidth = tileMaxX - sourceX;
+          const sourceHeight = tileMaxY - sourceY;
+
+          this.drawSourceRect(context, camera, sourceX, sourceY, sourceWidth, sourceHeight);
+        }
       }
     }
 
-    drawTo(context, camera) {
+    countVisibleTiles(bounds) {
+      const startTileX = Math.floor(bounds.minX / this.tileSize);
+      const startTileY = Math.floor(bounds.minY / this.tileSize);
+      const endTileX = Math.floor((bounds.maxX - 1) / this.tileSize);
+      const endTileY = Math.floor((bounds.maxY - 1) / this.tileSize);
+      let count = 0;
+
+      for (let tileY = startTileY; tileY <= endTileY; tileY += 1) {
+        for (let tileX = startTileX; tileX <= endTileX; tileX += 1) {
+          if (this.contentTiles.has(tileY * this.tilesX + tileX)) {
+            count += 1;
+          }
+        }
+      }
+
+      return count;
+    }
+
+    drawTo(context, camera, viewport = null) {
       if (this.isEmpty || !hasBounds(this.contentBounds)) {
         return;
       }
 
-      const sourceX = this.contentBounds.minX;
-      const sourceY = this.contentBounds.minY;
-      const sourceWidth = this.contentBounds.maxX - this.contentBounds.minX;
-      const sourceHeight = this.contentBounds.maxY - this.contentBounds.minY;
-      const boundsArea = sourceWidth * sourceHeight;
-      const tileArea = this.contentTiles.size * this.tileSize * this.tileSize;
+      const visibleBounds = intersectRects(this.contentBounds, this.getViewportBounds(camera, viewport));
 
-      if (this.contentTiles.size > 1 && tileArea < boundsArea * 0.82) {
-        this.drawTiles(context, camera);
+      if (!hasBounds(visibleBounds)) {
+        return;
+      }
+
+      const sourceX = visibleBounds.minX;
+      const sourceY = visibleBounds.minY;
+      const sourceWidth = visibleBounds.maxX - visibleBounds.minX;
+      const sourceHeight = visibleBounds.maxY - visibleBounds.minY;
+      const boundsArea = sourceWidth * sourceHeight;
+      const visibleTileCount = this.countVisibleTiles(visibleBounds);
+      const tileArea = visibleTileCount * this.tileSize * this.tileSize;
+
+      if (visibleTileCount > 1 && tileArea < boundsArea * 0.82) {
+        this.drawTiles(context, camera, visibleBounds);
         return;
       }
 
@@ -154,6 +222,7 @@
 
     begin(point, pressure = 0.5) {
       this.stroke = {
+        distanceSinceStamp: 0,
         last: point,
       };
       this.drawStamp(point, pressure);
@@ -167,20 +236,39 @@
 
       const previous = this.stroke.last;
       const distance = Math.hypot(point.x - previous.x, point.y - previous.y);
-      const radius = this.getRadius(pressure);
-      const spacing = Math.max(this.preset.minSpacing || 2, radius * (this.preset.spacing || 0.16));
-      const maxSteps = this.preset.maxStampsPerMove || 48;
-      const steps = Math.min(maxSteps, Math.max(1, Math.floor(distance / spacing)));
 
-      for (let index = 1; index <= steps; index += 1) {
-        const t = index / steps;
-
-        this.drawStamp({
-          x: previous.x + (point.x - previous.x) * t,
-          y: previous.y + (point.y - previous.y) * t,
-        }, pressure);
+      if (distance <= 0) {
+        return;
       }
 
+      const spacing = this.getSpacing(pressure);
+      const maxSteps = this.preset.maxStampsPerMove || 48;
+      const distanceSinceStamp = Math.min(
+        Math.max(this.stroke.distanceSinceStamp || 0, 0),
+        spacing
+      );
+      const firstStampDistance = Math.max(0, spacing - distanceSinceStamp);
+      const stampCount = firstStampDistance <= distance
+        ? Math.floor((distance - firstStampDistance) / spacing) + 1
+        : 0;
+
+      if (stampCount > maxSteps) {
+        this.drawEvenlySpacedStamps(previous, point, maxSteps, pressure);
+        this.stroke.distanceSinceStamp = 0;
+        this.stroke.last = point;
+        return;
+      }
+
+      let lastStampDistance = -distanceSinceStamp;
+      let nextStampDistance = firstStampDistance;
+
+      for (let index = 0; index < stampCount; index += 1) {
+        this.drawStampAtDistance(previous, point, nextStampDistance / distance, pressure);
+        lastStampDistance = nextStampDistance;
+        nextStampDistance += spacing;
+      }
+
+      this.stroke.distanceSinceStamp = distance - lastStampDistance;
       this.stroke.last = point;
     }
 
@@ -193,6 +281,25 @@
       const pressureAmount = clamp(pressure || 0.5, 0, 1) - 0.5;
 
       return Math.max(1, this.preset.radius * (1 + pressureAmount * pressureSize));
+    }
+
+    getSpacing(pressure) {
+      const radius = this.getRadius(pressure);
+
+      return Math.max(this.preset.minSpacing || 2, radius * (this.preset.spacing || 0.16));
+    }
+
+    drawStampAtDistance(from, to, amount, pressure) {
+      this.drawStamp({
+        x: from.x + (to.x - from.x) * amount,
+        y: from.y + (to.y - from.y) * amount,
+      }, pressure);
+    }
+
+    drawEvenlySpacedStamps(from, to, count, pressure) {
+      for (let index = 1; index <= count; index += 1) {
+        this.drawStampAtDistance(from, to, index / count, pressure);
+      }
     }
 
     getStamp(radius) {
