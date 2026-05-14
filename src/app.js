@@ -594,6 +594,16 @@ function applyElasticPan(camera = state.camera) {
   camera.y = rubberClamp(camera.y, bounds.minY, bounds.maxY, state.size.height);
 }
 
+function clampPanForZoom(camera, boundsZoom = camera.zoom) {
+  const bounds = getPanBounds(boundsZoom);
+
+  return {
+    ...camera,
+    x: clamp(camera.x, bounds.minX, bounds.maxX),
+    y: clamp(camera.y, bounds.minY, bounds.maxY),
+  };
+}
+
 function cameraFromZoomAnchor(anchor, zoom) {
   return {
     x: anchor.screen.x - anchor.document.x * zoom,
@@ -615,13 +625,8 @@ function createZoomAnchor(point, camera = state.camera) {
 function clampCamera(camera = state.camera, anchor = null) {
   const zoom = clamp(camera.zoom, state.zoomBounds.min, state.zoomBounds.max);
   const next = anchor ? cameraFromZoomAnchor(anchor, zoom) : { ...camera, zoom };
-  const bounds = getPanBounds(zoom);
 
-  return {
-    x: clamp(next.x, bounds.minX, bounds.maxX),
-    y: clamp(next.y, bounds.minY, bounds.maxY),
-    zoom,
-  };
+  return clampPanForZoom(next, zoom);
 }
 
 function setCamera(camera, options = {}) {
@@ -721,10 +726,11 @@ function zoomAt(point, requestedZoom, options = {}) {
   const zoom = options.elastic === false
     ? clamp(requestedZoom, state.zoomBounds.min, state.zoomBounds.max)
     : rubberClampZoom(requestedZoom);
-  const next = cameraFromZoomAnchor(anchor, zoom);
+  const boundsZoom = clamp(zoom, state.zoomBounds.min, state.zoomBounds.max);
+  const next = clampPanForZoom(cameraFromZoomAnchor(anchor, zoom), boundsZoom);
 
   state.zoomSettleAnchor = anchor;
-  setCamera(next, { elastic: options.elastic !== false });
+  setCamera(next, { elastic: false });
 }
 
 function getPointerPoint(event) {
@@ -821,10 +827,11 @@ function handlePointerMove(event) {
       document: state.gesture.documentPoint,
       screen: center,
     };
-    const next = cameraFromZoomAnchor(anchor, zoom);
+    const boundsZoom = clamp(zoom, state.zoomBounds.min, state.zoomBounds.max);
+    const next = clampPanForZoom(cameraFromZoomAnchor(anchor, zoom), boundsZoom);
 
     state.zoomSettleAnchor = anchor;
-    setCamera(next);
+    setCamera(next, { elastic: false });
     return;
   }
 
