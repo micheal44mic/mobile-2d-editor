@@ -12,6 +12,10 @@ const PREVIEW_LONG_EDGES = Object.freeze([256, 512, 1024, 1536, 2048, 3072]);
 const MOBILE_PREVIEW_CAP = 2048;
 const DESKTOP_PREVIEW_CAP = 3072;
 const IMAGE_LAYER_MAX_DOCUMENT_RATIO = 0.84;
+const PERF_ENABLED = new URLSearchParams(window.location.search).has("perf");
+const PERF_RING_SIZE = 1000;
+const PERF_UI_INTERVAL = 300;
+const LONG_TASK_MS = 50;
 
 const canvas = document.querySelector("[data-editor-viewport]");
 const imageInput = document.querySelector("[data-image-input]");
@@ -23,6 +27,7 @@ const zoomOutButton = document.querySelector("[data-zoom-out]");
 const zoomRange = document.querySelector("[data-zoom-range]");
 const zoomLabel = document.querySelector("[data-zoom-label]");
 const documentSizeLabel = document.querySelector("[data-document-size]");
+const perfPanel = document.querySelector("[data-perf-panel]");
 const context = canvas.getContext("2d", { alpha: false });
 const assetCache = new Map();
 
@@ -51,6 +56,297 @@ const state = {
     min: 1,
   },
 };
+const perf = createPerfState();
+
+function createRing(limit) {
+  return {
+    count: 0,
+    index: 0,
+    items: new Array(limit),
+    limit,
+  };
+}
+
+function ringPush(ring, value) {
+  ring.items[ring.index] = value;
+  ring.index = (ring.index + 1) % ring.limit;
+  ring.count = Math.min(ring.count + 1, ring.limit);
+}
+
+function ringValues(ring) {
+  const values = [];
+  const start = ring.count === ring.limit ? ring.index : 0;
+
+  for (let offset = 0; offset < ring.count; offset += 1) {
+    values.push(ring.items[(start + offset) % ring.limit]);
+  }
+
+  return values;
+}
+
+function createPerfState() {
+  return {
+    compositeTimes: createRing(PERF_RING_SIZE),
+    dirtyPixels: createRing(PERF_RING_SIZE),
+    droppedFrames: 0,
+    enabled: PERF_ENABLED,
+    frameBudget: 16.7,
+    frameTimes: createRing(PERF_RING_SIZE),
+    importTimes: createRing(64),
+    inputLatencies: createRing(PERF_RING_SIZE),
+    lastFrameAt: 0,
+    lastUiAt: 0,
+    longTaskObserver: null,
+    longTaskCount: 0,
+    longTasks: createRing(256),
+    pendingInputAt: 0,
+    renderTimes: createRing(PERF_RING_SIZE),
+    storage: {
+      quota: 0,
+      usage: 0,
+    },
+  };
+}
+
+function average(values) {
+  if (!values.length) {
+    return 0;
+  }
+
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function percentile(values, percent) {
+  if (!values.length) {
+    return 0;
+  }
+
+  const sorted = [...values].sort((first, second) => first - second);
+  const index = Math.min(sorted.length - 1, Math.ceil((percent / 100) * sorted.length) - 1);
+
+  return sorted[index];
+}
+
+function formatMs(value) {
+  return `${value.toFixed(value < 10 ? 1 : 0)} ms`;
+}
+
+function formatNumber(value) {
+  return new Intl.NumberFormat("it-IT", {
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
+function formatBytes(bytes) {
+  if (!bytes) {
+    return "0 MB";
+  }
+
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unitIndex = 0;
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${formatNumber(value)} ${units[unitIndex]}`;
+}
+
+function estimateImageCacheBytes() {
+  let bytes = 0;
+
+  for (const asset of assetCache.values()) {
+    for (const preview of asset.previews) {
+      bytes += preview.width * preview.height * 4;
+    }
+  }
+
+  return bytes;
+}
+
+function estimateViewportBytes() {
+  return canvas.width * canvas.height * 4;
+}
+
+function estimateLayerBytes() {
+  const baseBytes = DOCUMENT.width * DOCUMENT.height * 4;
+  const imageBytes = state.imageLayer
+    ? Math.round(state.imageLayer.width * state.imageLayer.height * 4)
+    : 0;
+
+  return baseBytes + imageBytes;
+}
+
+function recordInputForPerf(event) {
+  if (!perf.enabled) {
+    return;
+  }
+
+  const stamp = event.timeStamp;
+  perf.pendingInputAt = stamp > 0 && stamp < performance.now() + 1000
+    ? stamp
+    : performance.now();
+}
+
+function recordPerfMeasure(name, duration) {
+  if (!perf.enabled) {
+    return;
+  }
+
+  if (name === "render") {
+    ringPush(perf.renderTimes, duration);
+  } else if (name === "composite") {
+    ringPush(perf.compositeTimes, duration);
+  } else if (name === "image import") {
+    ringPush(perf.importTimes, duration);
+  }
+}
+
+async function measurePerfAsync(name, task) {
+  if (!perf.enabled) {
+    return task();
+  }
+
+  const start = performance.now();
+
+  try {
+    return await task();
+  } finally {
+    recordPerfMeasure(name, performance.now() - start);
+  }
+}
+
+async function updateStorageEstimate() {
+  if (!perf.enabled || !navigator.storage?.estimate) {
+    return;
+  }
+
+  try {
+    const estimate = await navigator.storage.estimate();
+
+    perf.storage.usage = estimate.usage || 0;
+    perf.storage.quota = estimate.quota || 0;
+  } catch (error) {
+    perf.storage.usage = 0;
+    perf.storage.quota = 0;
+  }
+}
+
+function scheduleStoragePerfUpdate() {
+  if (!perf.enabled) {
+    return;
+  }
+
+  updateStorageEstimate().finally(() => {
+    window.setTimeout(scheduleStoragePerfUpdate, 5000);
+  });
+}
+
+function updateFrameBudget(frameP50) {
+  if (!frameP50) {
+    return;
+  }
+
+  perf.frameBudget = frameP50 < 12 ? 8.3 : 16.7;
+}
+
+function updatePerfPanel(now = performance.now()) {
+  if (!perf.enabled || !perfPanel || now - perf.lastUiAt < PERF_UI_INTERVAL) {
+    return;
+  }
+
+  perf.lastUiAt = now;
+
+  const frameTimes = ringValues(perf.frameTimes);
+  const renderTimes = ringValues(perf.renderTimes);
+  const compositeTimes = ringValues(perf.compositeTimes);
+  const inputLatencies = ringValues(perf.inputLatencies);
+  const importTimes = ringValues(perf.importTimes);
+  const dirtyPixels = ringValues(perf.dirtyPixels);
+  const frameP50 = percentile(frameTimes, 50);
+  const frameP95 = percentile(frameTimes, 95);
+  const inputP95 = percentile(inputLatencies, 95);
+  const inputP99 = percentile(inputLatencies, 99);
+  const renderP95 = percentile(renderTimes, 95);
+  const compositeP95 = percentile(compositeTimes, 95);
+  const importLast = importTimes[importTimes.length - 1] || 0;
+  const fps = frameTimes.length ? 1000 / average(frameTimes.slice(-60)) : 0;
+  const dirtyAverage = average(dirtyPixels) / 1000000;
+  const jsHeap = performance.memory?.usedJSHeapSize || 0;
+  const imageCacheBytes = estimateImageCacheBytes();
+  const storageQuota = perf.storage.quota ? formatBytes(perf.storage.quota) : "n/d";
+  const storageUsage = perf.storage.quota ? formatBytes(perf.storage.usage) : "n/d";
+  const longTaskP95 = percentile(ringValues(perf.longTasks), 95);
+  const layerCount = state.imageLayer ? 2 : 1;
+
+  updateFrameBudget(frameP50);
+
+  perfPanel.textContent = [
+    "PERF ?perf=1",
+    `FPS: ${fps ? fps.toFixed(0) : "--"}`,
+    `Frame p95: ${formatMs(frameP95)}`,
+    `Input p95/p99: ${formatMs(inputP95)} / ${formatMs(inputP99)}`,
+    `Render p95: ${formatMs(renderP95)}`,
+    `Composite p95: ${formatMs(compositeP95)}`,
+    `Image import last: ${importLast ? formatMs(importLast) : "n/d"}`,
+    `Dirty pixels/frame: ${formatNumber(dirtyAverage)} MP`,
+    `Layers: ${layerCount}`,
+    `Layer estimate: ${formatBytes(estimateLayerBytes())}`,
+    `Viewport canvas: ${formatBytes(estimateViewportBytes())}`,
+    `Image cache: ${formatBytes(imageCacheBytes)}`,
+    "Undo memory: 0 MB",
+    `Storage: ${storageUsage} / ${storageQuota}`,
+    `Long tasks: ${perf.longTaskCount} p95 ${formatMs(longTaskP95)}`,
+    `Dropped frames: ${perf.droppedFrames}`,
+  ].join("\n");
+}
+
+function startPerfMonitor() {
+  if (!perf.enabled || !perfPanel) {
+    return;
+  }
+
+  perfPanel.hidden = false;
+
+  if ("PerformanceObserver" in window) {
+    try {
+      const observer = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          if (entry.duration >= LONG_TASK_MS) {
+            perf.longTaskCount += 1;
+            ringPush(perf.longTasks, entry.duration);
+          }
+        }
+      });
+
+      observer.observe({ buffered: true, type: "longtask" });
+      perf.longTaskObserver = observer;
+    } catch (error) {
+      console.warn("Long Task API non disponibile.", error);
+    }
+  }
+
+  const tick = (timestamp) => {
+    if (perf.lastFrameAt) {
+      const frameTime = timestamp - perf.lastFrameAt;
+
+      ringPush(perf.frameTimes, frameTime);
+
+      if (frameTime > perf.frameBudget * 1.5) {
+        perf.droppedFrames += Math.max(1, Math.round(frameTime / perf.frameBudget) - 1);
+      }
+    }
+
+    perf.lastFrameAt = timestamp;
+    updatePerfPanel(timestamp);
+    requestAnimationFrame(tick);
+  };
+
+  scheduleStoragePerfUpdate();
+  requestAnimationFrame(tick);
+}
 
 function isMobileLike() {
   return (
@@ -431,6 +727,7 @@ function beginPinch() {
 }
 
 function handlePointerDown(event) {
+  recordInputForPerf(event);
   event.preventDefault();
   canvas.setPointerCapture?.(event.pointerId);
   cancelAnimationFrame(state.settleRaf);
@@ -451,6 +748,7 @@ function handlePointerMove(event) {
     return;
   }
 
+  recordInputForPerf(event);
   event.preventDefault();
   state.pointers.set(event.pointerId, getPointerPoint(event));
 
@@ -519,6 +817,7 @@ function finishPointer(event) {
 }
 
 function handleWheel(event) {
+  recordInputForPerf(event);
   event.preventDefault();
   cancelAnimationFrame(state.settleRaf);
   state.settleRaf = 0;
@@ -536,6 +835,10 @@ function handleWheel(event) {
 }
 
 function setZoomByNormalized(value) {
+  if (perf.enabled) {
+    perf.pendingInputAt = performance.now();
+  }
+
   const t = clamp(Number(value) / 1000, 0, 1);
   const zoom = state.zoomBounds.min * ((state.zoomBounds.max / state.zoomBounds.min) ** t);
   const point = {
@@ -548,6 +851,10 @@ function setZoomByNormalized(value) {
 }
 
 function stepZoom(direction) {
+  if (perf.enabled) {
+    perf.pendingInputAt = performance.now();
+  }
+
   const factor = direction > 0 ? 1.22 : 1 / 1.22;
   const point = {
     x: state.size.width * 0.5,
@@ -596,7 +903,7 @@ async function handleImageInputChange(event) {
   setImageStatus(wasCached ? "cache" : "preview...");
 
   try {
-    const asset = await createImageAsset(file);
+    const asset = await measurePerfAsync("image import", () => createImageAsset(file));
 
     state.imageLayer = createImageLayer(asset);
     scheduleRender();
@@ -747,12 +1054,29 @@ function render() {
   state.raf = 0;
 
   const { dpr, height, width } = state.size;
+  const renderStart = perf.enabled ? performance.now() : 0;
 
   context.setTransform(dpr, 0, 0, dpr, 0, 0);
   context.clearRect(0, 0, width, height);
   context.fillStyle = "#171814";
   context.fillRect(0, 0, width, height);
+  const compositeStart = perf.enabled ? performance.now() : 0;
   drawDocument(context);
+
+  if (perf.enabled) {
+    const end = performance.now();
+
+    recordPerfMeasure("composite", end - compositeStart);
+    recordPerfMeasure("render", end - renderStart);
+    ringPush(perf.dirtyPixels, canvas.width * canvas.height);
+
+    if (perf.pendingInputAt) {
+      ringPush(perf.inputLatencies, Math.max(0, end - perf.pendingInputAt));
+      perf.pendingInputAt = 0;
+    }
+
+    updatePerfPanel(end);
+  }
 }
 
 function scheduleRender() {
@@ -811,6 +1135,7 @@ function init() {
   resize();
   centerCamera();
   updateImageStatus();
+  startPerfMonitor();
 }
 
 init();

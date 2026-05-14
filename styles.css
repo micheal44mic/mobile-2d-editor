@@ -158,6 +158,28 @@ input {
   backdrop-filter: blur(14px);
 }
 
+.perf-panel {
+  position: absolute;
+  top: calc(max(12px, env(safe-area-inset-top)) + 48px);
+  left: max(12px, env(safe-area-inset-left));
+  z-index: 3;
+  width: min(340px, calc(100vw - 24px));
+  max-height: min(58dvh, 460px);
+  overflow: hidden;
+  padding: 10px 12px;
+  border: 1px solid var(--toolbar-border);
+  border-radius: 7px;
+  background: rgba(12, 13, 11, 0.84);
+  color: var(--ink);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  letter-spacing: 0;
+  white-space: pre;
+  pointer-events: none;
+  backdrop-filter: blur(14px);
+}
+
 @media (max-width: 520px) {
   .status-pill {
     height: 32px;
@@ -173,5 +195,11 @@ input {
   .tool-button,
   .zoom-range {
     height: 40px;
+  }
+
+  .perf-panel {
+    top: calc(max(12px, env(safe-area-inset-top)) + 44px);
+    max-height: 48dvh;
+    font-size: 10px;
   }
 }
