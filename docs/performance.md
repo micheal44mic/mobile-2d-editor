@@ -20,6 +20,7 @@ The new app uses:
 - TypeScript for UI, input, and browser API orchestration;
 - a tile store instead of one giant brush layer;
 - a dirty composite cache;
+- an active tile index, so empty document tiles never allocate canvases, textures, or draw calls;
 - WebGPU-first final presentation;
 - Canvas 2D fallback using the same tile model;
 - coalesced pointer input.

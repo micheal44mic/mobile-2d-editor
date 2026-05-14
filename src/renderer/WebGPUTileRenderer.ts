@@ -188,7 +188,7 @@ export class WebGPUTileRenderer implements PaintRenderer {
   }
 
   render(camera: Camera): void {
-    const visibleTiles = this.store.visibleTiles(camera, this.viewport);
+    const visibleTiles = this.store.visiblePaintTiles(camera, this.viewport);
     const encoder = this.device.createCommandEncoder();
     const pass = encoder.beginRenderPass({
       colorAttachments: [

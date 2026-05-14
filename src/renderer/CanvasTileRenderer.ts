@@ -49,7 +49,7 @@ export class CanvasTileRenderer implements PaintRenderer {
 
   render(camera: Camera): void {
     const ctx = this.context;
-    const visibleTiles = this.store.visibleTiles(camera, this.viewport);
+    const visibleTiles = this.store.visiblePaintTiles(camera, this.viewport);
 
     this.visibleTileCount = visibleTiles.length;
 

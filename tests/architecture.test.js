@@ -15,11 +15,16 @@ test("app entry uses TypeScript and generated Rust/WASM core", () => {
 test("renderer has WebGPU primary backend and Canvas 2D fallback", () => {
   const factory = fs.readFileSync(path.join(root, "src", "renderer", "createRenderer.ts"), "utf8");
   const webgpu = fs.readFileSync(path.join(root, "src", "renderer", "WebGPUTileRenderer.ts"), "utf8");
+  const canvas = fs.readFileSync(path.join(root, "src", "renderer", "CanvasTileRenderer.ts"), "utf8");
+  const store = fs.readFileSync(path.join(root, "src", "renderer", "TileStore.ts"), "utf8");
 
   assert.match(factory, /WebGPUTileRenderer\.create/);
   assert.match(factory, /CanvasTileRenderer/);
   assert.match(webgpu, /navigator\.gpu\.requestAdapter/);
   assert.match(webgpu, /copyExternalImageToTexture/);
+  assert.match(webgpu, /visiblePaintTiles/);
+  assert.match(canvas, /visiblePaintTiles/);
+  assert.match(store, /activeTileKeys/);
 });
 
 test("docs describe the Rust, TypeScript, and WebGPU split", () => {

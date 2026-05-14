@@ -21,6 +21,7 @@ export class TileStore {
   private readonly compositeTiles = new Map<string, HTMLCanvasElement>();
   private readonly compositeVersions = new Map<string, number>();
   private readonly dirtyCompositeTiles = new Set<string>();
+  private readonly activeTileKeys = new Set<string>();
   private readonly layers = new Map<number, RasterLayer>();
   private readonly layerOrder: number[] = [];
   private readonly stampCache = new Map<number, HTMLCanvasElement>();
@@ -102,12 +103,15 @@ export class TileStore {
 
     for (const layer of this.layers.values()) {
       for (const key of keys) {
-        const tile = parseTileKey(key);
-        const canvas = this.ensureLayerTile(layer, tile);
-        const context = canvas.getContext("2d", { alpha: true });
+        const canvas = layer.tiles.get(key);
+        const context = canvas?.getContext("2d", { alpha: true });
 
         context?.clearRect(0, 0, this.tileSize, this.tileSize);
       }
+    }
+
+    for (const key of keys) {
+      this.activeTileKeys.delete(key);
     }
 
     for (const record of this.strokes.values()) {
@@ -125,7 +129,13 @@ export class TileStore {
     }
 
     for (const key of keys) {
-      this.dirtyCompositeTiles.add(key);
+      if (this.activeTileKeys.has(key)) {
+        this.dirtyCompositeTiles.add(key);
+      } else {
+        this.compositeTiles.delete(key);
+        this.compositeVersions.set(key, (this.compositeVersions.get(key) ?? 0) + 1);
+        this.dirtyCompositeTiles.delete(key);
+      }
     }
   }
 
@@ -138,6 +148,44 @@ export class TileStore {
   }
 
   visibleTiles(camera: Camera, viewport: Viewport): TileCoord[] {
+    const bounds = this.visibleTileBounds(camera, viewport);
+    const tiles: TileCoord[] = [];
+
+    for (let y = bounds.minY; y <= bounds.maxY; y += 1) {
+      for (let x = bounds.minX; x <= bounds.maxX; x += 1) {
+        tiles.push({ x, y });
+      }
+    }
+
+    return tiles;
+  }
+
+  visiblePaintTiles(camera: Camera, viewport: Viewport): TileCoord[] {
+    const bounds = this.visibleTileBounds(camera, viewport);
+    const tiles: TileCoord[] = [];
+
+    for (const key of this.activeTileKeys) {
+      const tile = parseTileKey(key);
+
+      if (
+        tile.x >= bounds.minX &&
+        tile.x <= bounds.maxX &&
+        tile.y >= bounds.minY &&
+        tile.y <= bounds.maxY
+      ) {
+        tiles.push(tile);
+      }
+    }
+
+    return tiles.sort((first, second) => first.y - second.y || first.x - second.x);
+  }
+
+  private visibleTileBounds(camera: Camera, viewport: Viewport): {
+    maxX: number;
+    maxY: number;
+    minX: number;
+    minY: number;
+  } {
     const minX = clamp(Math.floor((-camera.x) / camera.zoom / this.tileSize), 0, this.tileColumns() - 1);
     const minY = clamp(Math.floor((-camera.y) / camera.zoom / this.tileSize), 0, this.tileRows() - 1);
     const maxX = clamp(
@@ -150,15 +198,8 @@ export class TileStore {
       0,
       this.tileRows() - 1
     );
-    const tiles: TileCoord[] = [];
 
-    for (let y = minY; y <= maxY; y += 1) {
-      for (let x = minX; x <= maxX; x += 1) {
-        tiles.push({ x, y });
-      }
-    }
-
-    return tiles;
+    return { maxX, maxY, minX, minY };
   }
 
   private drawStampToLayer(layer: RasterLayer, stamp: Stamp, forcedTiles: TileCoord[] | null = null): void {
@@ -181,7 +222,10 @@ export class TileStore {
         stamp.y - tile.y * this.tileSize - stampCanvas.height * 0.5
       );
       context.globalAlpha = 1;
-      this.dirtyCompositeTiles.add(tileKey(tile));
+      const key = tileKey(tile);
+
+      this.activeTileKeys.add(key);
+      this.dirtyCompositeTiles.add(key);
     }
   }
 
