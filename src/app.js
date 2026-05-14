@@ -60,6 +60,8 @@ const state = {
     max: 1,
     min: 1,
   },
+  wheelAnchor: null,
+  zoomSettleAnchor: null,
 };
 const perf = createPerfState();
 
@@ -554,6 +556,21 @@ function rubberClamp(value, min, max, scale, minLimit = 24) {
   return value;
 }
 
+function rubberClampZoom(value) {
+  const minRubber = Math.max(0.02, state.zoomBounds.min * 0.12);
+  const maxRubber = Math.max(0.025, state.zoomBounds.max * 0.045);
+
+  if (value < state.zoomBounds.min) {
+    return state.zoomBounds.min - rubberDelta(state.zoomBounds.min - value, state.zoomBounds.min, minRubber);
+  }
+
+  if (value > state.zoomBounds.max) {
+    return state.zoomBounds.max + rubberDelta(value - state.zoomBounds.max, state.zoomBounds.max, maxRubber);
+  }
+
+  return value;
+}
+
 function getPanBounds(zoom = state.camera.zoom) {
   const docWidth = DOCUMENT.width * zoom;
   const docHeight = DOCUMENT.height * zoom;
@@ -577,13 +594,32 @@ function applyElasticPan(camera = state.camera) {
   camera.y = rubberClamp(camera.y, bounds.minY, bounds.maxY, state.size.height);
 }
 
-function clampCamera(camera = state.camera) {
+function cameraFromZoomAnchor(anchor, zoom) {
+  return {
+    x: anchor.screen.x - anchor.document.x * zoom,
+    y: anchor.screen.y - anchor.document.y * zoom,
+    zoom,
+  };
+}
+
+function createZoomAnchor(point, camera = state.camera) {
+  return {
+    document: screenToDocument(point, camera),
+    screen: {
+      x: point.x,
+      y: point.y,
+    },
+  };
+}
+
+function clampCamera(camera = state.camera, anchor = null) {
   const zoom = clamp(camera.zoom, state.zoomBounds.min, state.zoomBounds.max);
+  const next = anchor ? cameraFromZoomAnchor(anchor, zoom) : { ...camera, zoom };
   const bounds = getPanBounds(zoom);
 
   return {
-    x: clamp(camera.x, bounds.minX, bounds.maxX),
-    y: clamp(camera.y, bounds.minY, bounds.maxY),
+    x: clamp(next.x, bounds.minX, bounds.maxX),
+    y: clamp(next.y, bounds.minY, bounds.maxY),
     zoom,
   };
 }
@@ -610,6 +646,8 @@ function centerCamera() {
   state.camera.vx = 0;
   state.camera.vy = 0;
   state.camera.vz = 0;
+  state.wheelAnchor = null;
+  state.zoomSettleAnchor = null;
   setCamera({ x, y, zoom }, { elastic: false });
 }
 
@@ -617,20 +655,20 @@ function shouldSnapHome(camera = state.camera) {
   return camera.zoom <= state.zoomBounds.min * HOME_ZOOM_SNAP_RATIO;
 }
 
-function snapHomeOrSettleCamera() {
+function snapHomeOrSettleCamera(anchor = null) {
   if (shouldSnapHome()) {
     centerCamera();
     return;
   }
 
-  settleCamera();
+  settleCamera(anchor);
 }
 
-function settleCamera() {
+function settleCamera(anchor = null) {
   cancelAnimationFrame(state.settleRaf);
+  const target = clampCamera(state.camera, anchor);
 
   const tick = () => {
-    const target = clampCamera();
     const dx = target.x - state.camera.x;
     const dy = target.y - state.camera.y;
     const dz = target.zoom - state.camera.zoom;
@@ -679,17 +717,13 @@ function screenToDocument(point, camera = state.camera) {
 }
 
 function zoomAt(point, requestedZoom, options = {}) {
-  const before = screenToDocument(point);
-  const zoomRubber = Math.max(0.035, state.zoomBounds.min * 0.16);
+  const anchor = options.anchor || createZoomAnchor(point);
   const zoom = options.elastic === false
     ? clamp(requestedZoom, state.zoomBounds.min, state.zoomBounds.max)
-    : rubberClamp(requestedZoom, state.zoomBounds.min, state.zoomBounds.max, state.zoomBounds.max, zoomRubber);
-  const next = {
-    x: point.x - before.x * zoom,
-    y: point.y - before.y * zoom,
-    zoom,
-  };
+    : rubberClampZoom(requestedZoom);
+  const next = cameraFromZoomAnchor(anchor, zoom);
 
+  state.zoomSettleAnchor = anchor;
   setCamera(next, { elastic: options.elastic !== false });
 }
 
@@ -749,7 +783,9 @@ function handlePointerDown(event) {
   event.preventDefault();
   canvas.setPointerCapture?.(event.pointerId);
   cancelAnimationFrame(state.settleRaf);
+  window.clearTimeout(handleWheel.settleTimer);
   state.settleRaf = 0;
+  state.wheelAnchor = null;
   state.isInteracting = true;
   canvas.classList.add("is-dragging");
   state.pointers.set(event.pointerId, getPointerPoint(event));
@@ -757,6 +793,7 @@ function handlePointerDown(event) {
   if (state.pointers.size >= 2) {
     beginPinch();
   } else {
+    state.zoomSettleAnchor = null;
     beginPan(getPointerPoint(event));
   }
 }
@@ -779,14 +816,14 @@ function handlePointerMove(event) {
     const center = getCenter(first, second);
     const distance = Math.max(1, getDistance(first, second));
     const rawZoom = state.gesture.startCamera.zoom * (distance / state.gesture.distance);
-    const zoomRubber = Math.max(0.035, state.zoomBounds.min * 0.16);
-    const zoom = rubberClamp(rawZoom, state.zoomBounds.min, state.zoomBounds.max, state.zoomBounds.max, zoomRubber);
-    const next = {
-      x: center.x - state.gesture.documentPoint.x * zoom,
-      y: center.y - state.gesture.documentPoint.y * zoom,
-      zoom,
+    const zoom = rubberClampZoom(rawZoom);
+    const anchor = {
+      document: state.gesture.documentPoint,
+      screen: center,
     };
+    const next = cameraFromZoomAnchor(anchor, zoom);
 
+    state.zoomSettleAnchor = anchor;
     setCamera(next);
     return;
   }
@@ -824,6 +861,7 @@ function finishPointer(event) {
   }
 
   if (state.pointers.size === 1) {
+    state.zoomSettleAnchor = null;
     beginPan(getActivePointers()[0]);
     return;
   }
@@ -831,7 +869,10 @@ function finishPointer(event) {
   state.gesture = null;
   state.isInteracting = false;
   canvas.classList.remove("is-dragging");
-  snapHomeOrSettleCamera();
+  const releaseAnchor = state.zoomSettleAnchor;
+
+  snapHomeOrSettleCamera(releaseAnchor);
+  state.zoomSettleAnchor = null;
 }
 
 function handleWheel(event) {
@@ -847,10 +888,17 @@ function handleWheel(event) {
   };
   const delta = clamp(event.deltaY, -WHEEL_DELTA_LIMIT, WHEEL_DELTA_LIMIT);
   const factor = Math.exp(-delta * WHEEL_SENSITIVITY);
+  const anchor = state.wheelAnchor || createZoomAnchor(point);
 
-  zoomAt(point, state.camera.zoom * factor);
+  anchor.screen = point;
+  state.wheelAnchor = anchor;
+  zoomAt(point, state.camera.zoom * factor, { anchor });
   window.clearTimeout(handleWheel.settleTimer);
-  handleWheel.settleTimer = window.setTimeout(snapHomeOrSettleCamera, WHEEL_SETTLE_DELAY);
+  handleWheel.settleTimer = window.setTimeout(() => {
+    snapHomeOrSettleCamera(anchor);
+    state.wheelAnchor = null;
+    state.zoomSettleAnchor = null;
+  }, WHEEL_SETTLE_DELAY);
 }
 
 function setZoomByNormalized(value) {
@@ -866,7 +914,8 @@ function setZoomByNormalized(value) {
   };
 
   zoomAt(point, zoom, { elastic: false });
-  snapHomeOrSettleCamera();
+  snapHomeOrSettleCamera(state.zoomSettleAnchor);
+  state.zoomSettleAnchor = null;
 }
 
 function stepZoom(direction) {
@@ -881,7 +930,8 @@ function stepZoom(direction) {
   };
 
   zoomAt(point, state.camera.zoom * factor);
-  snapHomeOrSettleCamera();
+  snapHomeOrSettleCamera(state.zoomSettleAnchor);
+  state.zoomSettleAnchor = null;
 }
 
 function setImageStatus(text) {
