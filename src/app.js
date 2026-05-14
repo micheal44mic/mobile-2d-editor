@@ -8,6 +8,9 @@ const MAX_ZOOM_ABSOLUTE = 5;
 const SETTLE_EPSILON = 0.02;
 const SETTLE_STIFFNESS = 0.22;
 const SETTLE_FRICTION = 0.72;
+const ZOOM_BUTTON_STEP = 1.12;
+const WHEEL_SENSITIVITY = 0.00145;
+const WHEEL_DELTA_LIMIT = 70;
 const PREVIEW_LONG_EDGES = Object.freeze([256, 512, 1024, 1536, 2048, 3072]);
 const MOBILE_PREVIEW_CAP = 2048;
 const DESKTOP_PREVIEW_CAP = 3072;
@@ -827,7 +830,8 @@ function handleWheel(event) {
     x: event.clientX - rect.left,
     y: event.clientY - rect.top,
   };
-  const factor = Math.exp(-event.deltaY * 0.0016);
+  const delta = clamp(event.deltaY, -WHEEL_DELTA_LIMIT, WHEEL_DELTA_LIMIT);
+  const factor = Math.exp(-delta * WHEEL_SENSITIVITY);
 
   zoomAt(point, state.camera.zoom * factor);
   window.clearTimeout(handleWheel.settleTimer);
@@ -855,7 +859,7 @@ function stepZoom(direction) {
     perf.pendingInputAt = performance.now();
   }
 
-  const factor = direction > 0 ? 1.22 : 1 / 1.22;
+  const factor = direction > 0 ? ZOOM_BUTTON_STEP : 1 / ZOOM_BUTTON_STEP;
   const point = {
     x: state.size.width * 0.5,
     y: state.size.height * 0.5,
@@ -958,22 +962,12 @@ function resize() {
 }
 
 function drawChecker(ctx, x, y, width, height, zoom) {
-  const size = Math.max(8, Math.min(24, 16 * zoom));
-  const cols = Math.ceil(width / size);
-  const rows = Math.ceil(height / size);
-
   ctx.save();
   ctx.beginPath();
   ctx.rect(x, y, width, height);
   ctx.clip();
-
-  for (let row = 0; row < rows; row += 1) {
-    for (let col = 0; col < cols; col += 1) {
-      ctx.fillStyle = (row + col) % 2 === 0 ? "#f8f5ed" : "#eee9dd";
-      ctx.fillRect(x + col * size, y + row * size, size, size);
-    }
-  }
-
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(x, y, width, height);
   ctx.restore();
 }
 
@@ -1005,11 +999,11 @@ function drawDocument(ctx) {
   const height = DOCUMENT.height * zoom;
 
   ctx.save();
-  ctx.shadowColor = "rgba(0, 0, 0, 0.34)";
-  ctx.shadowBlur = 28;
-  ctx.shadowOffsetY = 16;
-  ctx.fillStyle = "#0e100d";
-  ctx.fillRect(x - 1, y - 1, width + 2, height + 2);
+  ctx.shadowColor = "rgba(15, 23, 42, 0.16)";
+  ctx.shadowBlur = 26;
+  ctx.shadowOffsetY = 14;
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(x, y, width, height);
   ctx.restore();
 
   drawChecker(ctx, x, y, width, height, zoom);
@@ -1024,29 +1018,9 @@ function drawDocument(ctx) {
   }
 
   ctx.save();
-  ctx.strokeStyle = "rgba(20, 21, 18, 0.22)";
+  ctx.strokeStyle = "rgba(15, 23, 42, 0.16)";
   ctx.lineWidth = 1;
   ctx.strokeRect(x + 0.5, y + 0.5, width - 1, height - 1);
-
-  if (zoom > state.zoomBounds.min * 1.35) {
-    const gridStep = 128 * zoom;
-
-    ctx.beginPath();
-    for (let gridX = x + gridStep; gridX < x + width; gridX += gridStep) {
-      ctx.moveTo(Math.round(gridX) + 0.5, y);
-      ctx.lineTo(Math.round(gridX) + 0.5, y + height);
-    }
-    for (let gridY = y + gridStep; gridY < y + height; gridY += gridStep) {
-      ctx.moveTo(x, Math.round(gridY) + 0.5);
-      ctx.lineTo(x + width, Math.round(gridY) + 0.5);
-    }
-    ctx.strokeStyle = "rgba(21, 22, 19, 0.08)";
-    ctx.stroke();
-  }
-
-  ctx.strokeStyle = "rgba(125, 211, 199, 0.72)";
-  ctx.lineWidth = 2;
-  ctx.strokeRect(x - 2, y - 2, width + 4, height + 4);
   ctx.restore();
 }
 
@@ -1058,7 +1032,7 @@ function render() {
 
   context.setTransform(dpr, 0, 0, dpr, 0, 0);
   context.clearRect(0, 0, width, height);
-  context.fillStyle = "#171814";
+  context.fillStyle = "#ffffff";
   context.fillRect(0, 0, width, height);
   const compositeStart = perf.enabled ? performance.now() : 0;
   drawDocument(context);

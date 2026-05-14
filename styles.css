@@ -1,13 +1,16 @@
 :root {
-  color-scheme: dark;
+  color-scheme: light;
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --toolbar-bg: rgba(19, 20, 18, 0.82);
-  --toolbar-border: rgba(255, 255, 255, 0.14);
-  --paper: #f8f5ed;
-  --ink: #f3f4f2;
-  --muted: rgba(243, 244, 242, 0.68);
-  --accent: #7dd3c7;
+  --app-bg: #ffffff;
+  --toolbar-bg: rgba(255, 255, 255, 0.86);
+  --toolbar-border: rgba(16, 24, 40, 0.12);
+  --toolbar-shadow: 0 12px 36px rgba(16, 24, 40, 0.12);
+  --paper: #ffffff;
+  --ink: #111827;
+  --muted: rgba(17, 24, 39, 0.58);
+  --accent: #2563eb;
+  --accent-soft: rgba(37, 99, 235, 0.12);
 }
 
 * {
@@ -20,12 +23,17 @@ body {
   height: 100%;
   margin: 0;
   overflow: hidden;
-  background: #171814;
+  background: var(--app-bg);
+  overscroll-behavior: none;
 }
 
 button,
 input {
   font: inherit;
+}
+
+button {
+  -webkit-tap-highlight-color: transparent;
 }
 
 [hidden] {
@@ -37,11 +45,7 @@ input {
   height: 100%;
   min-height: 100dvh;
   overflow: hidden;
-  background:
-    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
-    #171814;
-  background-size: 32px 32px;
+  background: var(--app-bg);
 }
 
 .editor-stage {
@@ -49,6 +53,7 @@ input {
   width: 100%;
   height: 100dvh;
   overflow: hidden;
+  background: var(--app-bg);
   touch-action: none;
   user-select: none;
 }
@@ -57,6 +62,7 @@ input {
   display: block;
   width: 100%;
   height: 100%;
+  background: var(--app-bg);
   cursor: grab;
   touch-action: none;
 }
@@ -80,6 +86,7 @@ input {
 .top-strip {
   top: max(12px, env(safe-area-inset-top));
   justify-content: center;
+  flex-wrap: wrap;
 }
 
 .bottom-strip {
@@ -111,13 +118,15 @@ input {
   align-items: center;
   justify-content: center;
   border: 1px solid var(--toolbar-border);
-  border-radius: 7px;
+  border-radius: 999px;
   background: var(--toolbar-bg);
   color: var(--ink);
+  box-shadow: var(--toolbar-shadow);
   font-size: 12px;
   font-weight: 650;
   letter-spacing: 0;
-  backdrop-filter: blur(14px);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
 }
 
 .icon-button,
@@ -128,48 +137,67 @@ input {
   display: inline-grid;
   place-items: center;
   border: 1px solid var(--toolbar-border);
-  border-radius: 7px;
+  border-radius: 14px;
   background: var(--toolbar-bg);
   color: var(--ink);
+  box-shadow: var(--toolbar-shadow);
   font-size: 22px;
   line-height: 1;
-  backdrop-filter: blur(14px);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  transition: transform 120ms ease, background-color 120ms ease, border-color 120ms ease;
 }
 
 .icon-button {
   width: 34px;
   height: 34px;
+  border-radius: 12px;
   font-size: 16px;
+}
+
+.icon-button:hover,
+.tool-button:hover {
+  background: rgba(255, 255, 255, 0.96);
 }
 
 .icon-button:active,
 .tool-button:active {
-  transform: translateY(1px);
+  transform: translateY(1px) scale(0.98);
+}
+
+.icon-button:focus-visible,
+.tool-button:focus-visible,
+.zoom-range:focus-visible {
+  outline: 3px solid var(--accent-soft);
+  outline-offset: 2px;
 }
 
 .zoom-range {
-  width: min(42vw, 260px);
+  width: min(48vw, 300px);
   height: 42px;
   padding: 0 12px;
   border: 1px solid var(--toolbar-border);
-  border-radius: 7px;
+  border-radius: 14px;
   background: var(--toolbar-bg);
+  box-shadow: var(--toolbar-shadow);
   accent-color: var(--accent);
-  backdrop-filter: blur(14px);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
 }
 
 .perf-panel {
   position: absolute;
-  top: calc(max(12px, env(safe-area-inset-top)) + 48px);
-  left: max(12px, env(safe-area-inset-left));
+  right: max(12px, env(safe-area-inset-right));
+  bottom: calc(max(14px, env(safe-area-inset-bottom)) + 58px);
   z-index: 3;
-  width: min(340px, calc(100vw - 24px));
+  max-width: min(420px, calc(100vw - 24px));
   max-height: min(58dvh, 460px);
   overflow: hidden;
-  padding: 10px 12px;
+  padding: 12px;
   border: 1px solid var(--toolbar-border);
-  border-radius: 7px;
-  background: rgba(12, 13, 11, 0.84);
+  border-radius: 14px;
+  background: var(--toolbar-bg);
+  box-shadow: var(--toolbar-shadow);
   color: var(--ink);
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 11px;
@@ -177,13 +205,19 @@ input {
   letter-spacing: 0;
   white-space: pre;
   pointer-events: none;
-  backdrop-filter: blur(14px);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
 }
 
 @media (max-width: 520px) {
+  .top-strip,
+  .bottom-strip {
+    gap: 7px;
+  }
+
   .status-pill {
     height: 32px;
-    padding: 0 9px;
+    padding: 0 10px;
     font-size: 11px;
   }
 
@@ -197,8 +231,11 @@ input {
     height: 40px;
   }
 
+  .tool-button {
+    width: 40px;
+  }
+
   .perf-panel {
-    top: calc(max(12px, env(safe-area-inset-top)) + 44px);
     max-height: 48dvh;
     font-size: 10px;
   }
