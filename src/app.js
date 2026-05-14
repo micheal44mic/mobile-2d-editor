@@ -8,12 +8,14 @@ const MAX_ZOOM_ABSOLUTE = 5;
 const SETTLE_EPSILON = 0.02;
 const SETTLE_STIFFNESS = 0.22;
 const SETTLE_FRICTION = 0.72;
-const ZOOM_BUTTON_STEP = 1.12;
 const WHEEL_SENSITIVITY = 0.00145;
 const WHEEL_DELTA_LIMIT = 70;
 const WHEEL_SETTLE_DELAY = 80;
 const HOME_ZOOM_SNAP_RATIO = 1.08;
 const ZOOM_LIMIT_EPSILON = 0.0001;
+const MIN_BRUSH_SIZE = 1;
+const MAX_BRUSH_SIZE = 128;
+const BRUSH_SIZE_STEP = 1;
 const PREVIEW_LONG_EDGES = Object.freeze([256, 512, 1024, 1536, 2048, 3072]);
 const MOBILE_PREVIEW_CAP = 2048;
 const DESKTOP_PREVIEW_CAP = 3072;
@@ -24,14 +26,15 @@ const PERF_UI_INTERVAL = 300;
 const LONG_TASK_MS = 50;
 
 const canvas = document.querySelector("[data-editor-viewport]");
+const brushSizeDownButton = document.querySelector("[data-brush-size-down]");
+const brushSizeLabel = document.querySelector("[data-brush-size-label]");
+const brushSizeRange = document.querySelector("[data-brush-size-range]");
+const brushSizeUpButton = document.querySelector("[data-brush-size-up]");
 const brushToggleButton = document.querySelector("[data-brush-toggle]");
 const imageInput = document.querySelector("[data-image-input]");
 const imageStatusLabel = document.querySelector("[data-image-status]");
 const imageUploadButton = document.querySelector("[data-image-upload]");
 const resetButton = document.querySelector("[data-reset-view]");
-const zoomInButton = document.querySelector("[data-zoom-in]");
-const zoomOutButton = document.querySelector("[data-zoom-out]");
-const zoomRange = document.querySelector("[data-zoom-range]");
 const zoomLabel = document.querySelector("[data-zoom-label]");
 const documentSizeLabel = document.querySelector("[data-document-size]");
 const perfPanel = document.querySelector("[data-perf-panel]");
@@ -50,6 +53,7 @@ const state = {
   activeBrushPointerId: null,
   brushEngine: null,
   brushLayer: null,
+  brushSize: 22,
   gesture: null,
   hasViewport: false,
   imageLayer: null,
@@ -538,6 +542,8 @@ function initBrushes() {
     layer: state.brushLayer,
     preset: brushes.getBrushPreset("grainPencil"),
   });
+  state.brushSize = state.brushEngine.getDiameter();
+  updateBrushSizeUi();
 }
 
 function setTool(tool) {
@@ -553,6 +559,28 @@ function setTool(tool) {
 
 function toggleBrushTool() {
   setTool(state.tool === "brush" ? "pan" : "brush");
+}
+
+function setBrushSize(size) {
+  const nextSize = clamp(Math.round(Number(size) || state.brushSize), MIN_BRUSH_SIZE, MAX_BRUSH_SIZE);
+
+  state.brushSize = nextSize;
+  state.brushEngine?.setDiameter(nextSize);
+  updateBrushSizeUi();
+}
+
+function stepBrushSize(direction) {
+  setBrushSize(state.brushSize + direction * BRUSH_SIZE_STEP);
+}
+
+function updateBrushSizeUi() {
+  if (brushSizeLabel) {
+    brushSizeLabel.textContent = `${state.brushSize} px`;
+  }
+
+  if (brushSizeRange && document.activeElement !== brushSizeRange) {
+    brushSizeRange.value = String(state.brushSize);
+  }
 }
 
 function clamp(value, min, max) {
@@ -983,41 +1011,6 @@ function handleWheel(event) {
   }, WHEEL_SETTLE_DELAY);
 }
 
-function setZoomByNormalized(value) {
-  if (perf.enabled) {
-    perf.pendingInputAt = performance.now();
-  }
-
-  const t = clamp(Number(value) / 1000, 0, 1);
-  const zoom = state.zoomBounds.min * ((state.zoomBounds.max / state.zoomBounds.min) ** t);
-  const point = {
-    x: state.size.width * 0.5,
-    y: state.size.height * 0.5,
-  };
-
-  zoomAt(point, zoom, { elastic: false });
-  snapHomeOrSettleCamera(state.zoomSettleAnchor);
-  state.zoomSettleAnchor = null;
-  state.wantsHomeSnap = false;
-}
-
-function stepZoom(direction) {
-  if (perf.enabled) {
-    perf.pendingInputAt = performance.now();
-  }
-
-  const factor = direction > 0 ? ZOOM_BUTTON_STEP : 1 / ZOOM_BUTTON_STEP;
-  const point = {
-    x: state.size.width * 0.5,
-    y: state.size.height * 0.5,
-  };
-
-  zoomAt(point, state.camera.zoom * factor);
-  snapHomeOrSettleCamera(state.zoomSettleAnchor);
-  state.zoomSettleAnchor = null;
-  state.wantsHomeSnap = false;
-}
-
 function setImageStatus(text) {
   if (!imageStatusLabel) {
     return;
@@ -1235,18 +1228,9 @@ function scheduleRender() {
 function updateZoomUi() {
   const zoom = state.camera.zoom;
   const percentage = Math.round((zoom / state.zoomBounds.min) * 100);
-  const min = state.zoomBounds.min;
-  const max = state.zoomBounds.max;
-  const t = max > min
-    ? Math.log(zoom / min) / Math.log(max / min)
-    : 0;
 
   if (zoomLabel) {
     zoomLabel.textContent = `${percentage}%`;
-  }
-
-  if (zoomRange && document.activeElement !== zoomRange) {
-    zoomRange.value = String(Math.round(clamp(t, 0, 1) * 1000));
   }
 
   updateImageStatus();
@@ -1260,12 +1244,12 @@ function bindEvents() {
   canvas.addEventListener("wheel", handleWheel, { passive: false });
   window.addEventListener("resize", resize, { passive: true });
   resetButton?.addEventListener("click", centerCamera);
+  brushSizeDownButton?.addEventListener("click", () => stepBrushSize(-1));
+  brushSizeRange?.addEventListener("input", () => setBrushSize(brushSizeRange.value));
+  brushSizeUpButton?.addEventListener("click", () => stepBrushSize(1));
   brushToggleButton?.addEventListener("click", toggleBrushTool);
   imageUploadButton?.addEventListener("click", () => imageInput?.click());
   imageInput?.addEventListener("change", handleImageInputChange);
-  zoomInButton?.addEventListener("click", () => stepZoom(1));
-  zoomOutButton?.addEventListener("click", () => stepZoom(-1));
-  zoomRange?.addEventListener("input", () => setZoomByNormalized(zoomRange.value));
 }
 
 function init() {

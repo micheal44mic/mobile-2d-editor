@@ -52,6 +52,15 @@
       this.stampCache.clear();
     }
 
+    getDiameter() {
+      return Math.round(this.preset.radius * 2);
+    }
+
+    setDiameter(diameter) {
+      this.preset.radius = Math.max(0.5, diameter * 0.5);
+      this.stampCache.clear();
+    }
+
     begin(point, pressure = 0.5) {
       this.stroke = {
         last: point,

@@ -13,3 +13,4 @@ Prototype leggero di editor 2D mobile-first.
 - Profiler attivabile con `?perf=1`.
 - Brush separati in file dedicati: preset, texture/grain/shape ed engine/layer.
 - Primo brush grain pencil: un dito disegna, due dita muovono/zoomano la vista.
+- Controlli inferiori dedicati alla grandezza del brush in pixel.

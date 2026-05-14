@@ -97,7 +97,7 @@ button {
 .status-pill,
 .icon-button,
 .tool-button,
-.zoom-range,
+.control-range,
 .file-input {
   pointer-events: auto;
 }
@@ -173,12 +173,12 @@ button {
 
 .icon-button:focus-visible,
 .tool-button:focus-visible,
-.zoom-range:focus-visible {
+.control-range:focus-visible {
   outline: 3px solid var(--accent-soft);
   outline-offset: 2px;
 }
 
-.zoom-range {
+.control-range {
   width: min(48vw, 300px);
   height: 42px;
   padding: 0 12px;
@@ -189,6 +189,10 @@ button {
   accent-color: var(--accent);
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
+}
+
+.brush-size-label {
+  min-width: 62px;
 }
 
 .perf-panel {
@@ -233,7 +237,7 @@ button {
   }
 
   .tool-button,
-  .zoom-range {
+  .control-range {
     height: 40px;
   }
 

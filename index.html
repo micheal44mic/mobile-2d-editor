@@ -27,10 +27,11 @@
           </button>
         </div>
 
-        <div class="bottom-strip" aria-label="Controlli zoom">
-          <button class="tool-button" type="button" data-zoom-out aria-label="Zoom out">−</button>
-          <input class="zoom-range" data-zoom-range type="range" min="0" max="1000" value="0" aria-label="Zoom">
-          <button class="tool-button" type="button" data-zoom-in aria-label="Zoom in">+</button>
+        <div class="bottom-strip" aria-label="Grandezza pennello">
+          <button class="tool-button" type="button" data-brush-size-down aria-label="Riduci pennello">−</button>
+          <input class="control-range" data-brush-size-range type="range" min="1" max="128" value="22" aria-label="Grandezza pennello in pixel">
+          <span class="status-pill brush-size-label" data-brush-size-label>22 px</span>
+          <button class="tool-button" type="button" data-brush-size-up aria-label="Aumenta pennello">+</button>
         </div>
 
         <aside class="perf-panel" data-perf-panel hidden aria-label="Profiler prestazioni"></aside>
