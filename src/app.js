@@ -12,7 +12,7 @@ const ZOOM_BUTTON_STEP = 1.12;
 const WHEEL_SENSITIVITY = 0.00145;
 const WHEEL_DELTA_LIMIT = 70;
 const WHEEL_SETTLE_DELAY = 80;
-const HOME_ZOOM_SNAP_RATIO = 1.015;
+const HOME_ZOOM_SNAP_RATIO = 1.08;
 const ZOOM_LIMIT_EPSILON = 0.0001;
 const PREVIEW_LONG_EDGES = Object.freeze([256, 512, 1024, 1536, 2048, 3072]);
 const MOBILE_PREVIEW_CAP = 2048;
@@ -66,6 +66,7 @@ const state = {
     max: 1,
     min: 1,
   },
+  wantsHomeSnap: false,
   tool: "brush",
   wheelAnchor: null,
   zoomSettleAnchor: null,
@@ -628,6 +629,7 @@ function centerCamera() {
   cancelAnimationFrame(state.settleRaf);
   window.clearTimeout(handleWheel.settleTimer);
   state.settleRaf = 0;
+  state.wantsHomeSnap = false;
   updateZoomBounds();
   const zoom = state.zoomBounds.min;
   const x = (state.size.width - DOCUMENT.width * zoom) * 0.5;
@@ -642,7 +644,7 @@ function centerCamera() {
 }
 
 function shouldSnapHome(camera = state.camera) {
-  return camera.zoom <= state.zoomBounds.min * HOME_ZOOM_SNAP_RATIO;
+  return state.wantsHomeSnap || camera.zoom <= state.zoomBounds.min * HOME_ZOOM_SNAP_RATIO;
 }
 
 function snapHomeOrSettleCamera(anchor = null) {
@@ -652,6 +654,7 @@ function snapHomeOrSettleCamera(anchor = null) {
   }
 
   settleCamera(anchor);
+  state.wantsHomeSnap = false;
 }
 
 function settleCamera(anchor = null) {
@@ -707,6 +710,10 @@ function screenToDocument(point, camera = state.camera) {
 }
 
 function zoomAt(point, requestedZoom, options = {}) {
+  if (requestedZoom <= state.zoomBounds.min * HOME_ZOOM_SNAP_RATIO) {
+    state.wantsHomeSnap = true;
+  }
+
   if (
     requestedZoom > state.zoomBounds.max &&
     state.camera.zoom >= state.zoomBounds.max - ZOOM_LIMIT_EPSILON
@@ -821,6 +828,7 @@ function handlePointerDown(event) {
   window.clearTimeout(handleWheel.settleTimer);
   state.settleRaf = 0;
   state.wheelAnchor = null;
+  state.wantsHomeSnap = false;
   state.isInteracting = true;
   canvas.classList.add("is-dragging");
   const point = getPointerPoint(event);
@@ -930,6 +938,7 @@ function finishPointer(event) {
 
   if (state.pointers.size === 1) {
     state.zoomSettleAnchor = null;
+    state.wantsHomeSnap = false;
     beginPan(getActivePointers()[0]);
     return;
   }
@@ -989,6 +998,7 @@ function setZoomByNormalized(value) {
   zoomAt(point, zoom, { elastic: false });
   snapHomeOrSettleCamera(state.zoomSettleAnchor);
   state.zoomSettleAnchor = null;
+  state.wantsHomeSnap = false;
 }
 
 function stepZoom(direction) {
@@ -1005,6 +1015,7 @@ function stepZoom(direction) {
   zoomAt(point, state.camera.zoom * factor);
   snapHomeOrSettleCamera(state.zoomSettleAnchor);
   state.zoomSettleAnchor = null;
+  state.wantsHomeSnap = false;
 }
 
 function setImageStatus(text) {
