@@ -47,6 +47,7 @@ const state = {
     vz: 0,
   },
   gesture: null,
+  hasViewport: false,
   imageLayer: null,
   isInteracting: false,
   pointers: new Map(),
@@ -588,6 +589,9 @@ function setCamera(camera) {
 }
 
 function centerCamera() {
+  cancelAnimationFrame(state.settleRaf);
+  window.clearTimeout(handleWheel.settleTimer);
+  state.settleRaf = 0;
   updateZoomBounds();
   const zoom = state.zoomBounds.min;
   const x = (state.size.width - DOCUMENT.width * zoom) * 0.5;
@@ -958,8 +962,10 @@ function resize() {
   const pixelHeight = Math.max(1, Math.round(height * dpr));
   const previousMin = state.zoomBounds.min;
   const previousZoom = state.camera.zoom;
+  const shouldCenter = !state.hasViewport;
 
   state.size = { dpr, height, width };
+  state.hasViewport = true;
 
   if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
     canvas.width = pixelWidth;
@@ -968,7 +974,7 @@ function resize() {
 
   updateZoomBounds();
 
-  if (!Number.isFinite(previousZoom) || previousZoom <= 0 || previousMin <= 0) {
+  if (shouldCenter || !Number.isFinite(previousZoom) || previousZoom <= 0 || previousMin <= 0) {
     centerCamera();
   } else {
     const zoomRatio = previousZoom / previousMin;
