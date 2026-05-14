@@ -662,7 +662,7 @@ function centerCamera() {
 }
 
 function shouldSnapHome(camera = state.camera) {
-  return state.wantsHomeSnap || camera.zoom <= state.zoomBounds.min * HOME_ZOOM_SNAP_RATIO;
+  return state.wantsHomeSnap && camera.zoom <= state.zoomBounds.min * HOME_ZOOM_SNAP_RATIO;
 }
 
 function snapHomeOrSettleCamera(anchor = null) {
@@ -728,9 +728,9 @@ function screenToDocument(point, camera = state.camera) {
 }
 
 function zoomAt(point, requestedZoom, options = {}) {
-  if (requestedZoom <= state.zoomBounds.min * HOME_ZOOM_SNAP_RATIO) {
-    state.wantsHomeSnap = true;
-  }
+  const isZoomingOut = requestedZoom < state.camera.zoom - ZOOM_LIMIT_EPSILON;
+
+  state.wantsHomeSnap = isZoomingOut && requestedZoom <= state.zoomBounds.min * HOME_ZOOM_SNAP_RATIO;
 
   if (
     requestedZoom > state.zoomBounds.max &&
@@ -965,7 +965,7 @@ function finishPointer(event) {
   canvas.classList.remove("is-dragging");
   const releaseAnchor = state.zoomSettleAnchor;
 
-  if (state.wantsHomeSnap) {
+  if (shouldSnapHome()) {
     centerCamera();
   } else if (releaseAnchor) {
     snapHomeOrSettleCamera(releaseAnchor);
