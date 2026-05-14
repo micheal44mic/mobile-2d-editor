@@ -966,7 +966,6 @@ function finishPointer(event) {
 
   if (state.pointers.size === 1) {
     state.zoomSettleAnchor = null;
-    state.wantsHomeSnap = false;
     beginPan(getActivePointers()[0]);
     return;
   }
@@ -976,7 +975,9 @@ function finishPointer(event) {
   canvas.classList.remove("is-dragging");
   const releaseAnchor = state.zoomSettleAnchor;
 
-  if (releaseAnchor) {
+  if (state.wantsHomeSnap) {
+    centerCamera();
+  } else if (releaseAnchor) {
     snapHomeOrSettleCamera(releaseAnchor);
   } else {
     settleCamera();
