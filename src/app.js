@@ -1,0 +1,816 @@
+const VIEW_MARGIN = 50;
+const DOCUMENT = Object.freeze({
+  height: 1536,
+  width: 1536,
+});
+const MAX_ZOOM_MULTIPLIER = 8;
+const MAX_ZOOM_ABSOLUTE = 5;
+const SETTLE_EPSILON = 0.02;
+const SETTLE_STIFFNESS = 0.22;
+const SETTLE_FRICTION = 0.72;
+const PREVIEW_LONG_EDGES = Object.freeze([256, 512, 1024, 1536, 2048, 3072]);
+const MOBILE_PREVIEW_CAP = 2048;
+const DESKTOP_PREVIEW_CAP = 3072;
+const IMAGE_LAYER_MAX_DOCUMENT_RATIO = 0.84;
+
+const canvas = document.querySelector("[data-editor-viewport]");
+const imageInput = document.querySelector("[data-image-input]");
+const imageStatusLabel = document.querySelector("[data-image-status]");
+const imageUploadButton = document.querySelector("[data-image-upload]");
+const resetButton = document.querySelector("[data-reset-view]");
+const zoomInButton = document.querySelector("[data-zoom-in]");
+const zoomOutButton = document.querySelector("[data-zoom-out]");
+const zoomRange = document.querySelector("[data-zoom-range]");
+const zoomLabel = document.querySelector("[data-zoom-label]");
+const documentSizeLabel = document.querySelector("[data-document-size]");
+const context = canvas.getContext("2d", { alpha: false });
+const assetCache = new Map();
+
+const state = {
+  camera: {
+    x: 0,
+    y: 0,
+    zoom: 1,
+    vx: 0,
+    vy: 0,
+    vz: 0,
+  },
+  gesture: null,
+  imageLayer: null,
+  isInteracting: false,
+  pointers: new Map(),
+  raf: 0,
+  settleRaf: 0,
+  size: {
+    dpr: 1,
+    height: 1,
+    width: 1,
+  },
+  zoomBounds: {
+    max: 1,
+    min: 1,
+  },
+};
+
+function isMobileLike() {
+  return (
+    navigator.maxTouchPoints > 0 ||
+    window.matchMedia?.("(pointer: coarse)")?.matches === true ||
+    /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)
+  );
+}
+
+function getRenderDpr() {
+  return isMobileLike()
+    ? 1
+    : Math.min(1.5, Math.max(1, window.devicePixelRatio || 1));
+}
+
+function getMaxPreviewLongEdge() {
+  return isMobileLike() ? MOBILE_PREVIEW_CAP : DESKTOP_PREVIEW_CAP;
+}
+
+function nextFrame() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(resolve);
+  });
+}
+
+function getImageSourceSize(source) {
+  return {
+    height: source.naturalHeight || source.height,
+    width: source.naturalWidth || source.width,
+  };
+}
+
+function getFileCacheKey(file) {
+  return `${file.name}:${file.size}:${file.lastModified}`;
+}
+
+async function decodeImageFile(file) {
+  if ("createImageBitmap" in window) {
+    try {
+      return await createImageBitmap(file, { imageOrientation: "from-image" });
+    } catch (error) {
+      console.warn("createImageBitmap non riuscito, uso fallback img.", error);
+    }
+  }
+
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    const url = URL.createObjectURL(file);
+
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Immagine non leggibile."));
+    };
+    image.src = url;
+  });
+}
+
+function createScaledCanvas(source, width, height) {
+  const preview = document.createElement("canvas");
+  const previewContext = preview.getContext("2d", { alpha: true });
+
+  preview.width = width;
+  preview.height = height;
+  previewContext.imageSmoothingEnabled = true;
+  previewContext.imageSmoothingQuality = "high";
+  previewContext.drawImage(source, 0, 0, width, height);
+
+  return preview;
+}
+
+function getPreviewTargets(width, height) {
+  const longest = Math.max(width, height);
+  const cappedLongest = Math.max(1, Math.min(longest, getMaxPreviewLongEdge()));
+  const targets = PREVIEW_LONG_EDGES.filter((edge) => edge < cappedLongest);
+
+  targets.push(Math.round(cappedLongest));
+
+  return Array.from(new Set(targets)).filter((edge) => edge >= 16);
+}
+
+async function buildPreviewPyramid(source, width, height) {
+  const longest = Math.max(width, height);
+  const targets = getPreviewTargets(width, height);
+  const previews = [];
+
+  for (const target of targets) {
+    const scale = Math.min(1, target / longest);
+    const previewWidth = Math.max(1, Math.round(width * scale));
+    const previewHeight = Math.max(1, Math.round(height * scale));
+    const bitmap = createScaledCanvas(source, previewWidth, previewHeight);
+
+    previews.push({
+      bitmap,
+      height: previewHeight,
+      longest: Math.max(previewWidth, previewHeight),
+      width: previewWidth,
+    });
+
+    await nextFrame();
+  }
+
+  return previews;
+}
+
+async function createImageAsset(file) {
+  const cacheKey = getFileCacheKey(file);
+  const cached = assetCache.get(cacheKey);
+
+  if (cached) {
+    return cached;
+  }
+
+  const source = await decodeImageFile(file);
+  const { height, width } = getImageSourceSize(source);
+  const previews = await buildPreviewPyramid(source, width, height);
+
+  if (typeof source.close === "function") {
+    source.close();
+  }
+
+  const asset = {
+    cacheKey,
+    height,
+    name: file.name,
+    previews,
+    width,
+  };
+
+  assetCache.set(cacheKey, asset);
+
+  return asset;
+}
+
+function createImageLayer(asset) {
+  const maxWidth = DOCUMENT.width * IMAGE_LAYER_MAX_DOCUMENT_RATIO;
+  const maxHeight = DOCUMENT.height * IMAGE_LAYER_MAX_DOCUMENT_RATIO;
+  const fit = Math.min(1, maxWidth / asset.width, maxHeight / asset.height);
+  const width = Math.max(1, asset.width * fit);
+  const height = Math.max(1, asset.height * fit);
+
+  return {
+    asset,
+    height,
+    width,
+    x: (DOCUMENT.width - width) * 0.5,
+    y: (DOCUMENT.height - height) * 0.5,
+  };
+}
+
+function getPreferredPreview(layer) {
+  const neededWidth = layer.width * state.camera.zoom * state.size.dpr;
+  const neededHeight = layer.height * state.camera.zoom * state.size.dpr;
+  const neededLongest = Math.max(neededWidth, neededHeight) * 1.15;
+  const previews = layer.asset.previews;
+
+  return previews.find((preview) => preview.longest >= neededLongest) || previews[previews.length - 1];
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function lerp(from, to, amount) {
+  return from + (to - from) * amount;
+}
+
+function getFitZoom() {
+  const usableWidth = Math.max(1, state.size.width - VIEW_MARGIN * 2);
+  const usableHeight = Math.max(1, state.size.height - VIEW_MARGIN * 2);
+
+  return Math.min(usableWidth / DOCUMENT.width, usableHeight / DOCUMENT.height);
+}
+
+function updateZoomBounds() {
+  const min = Math.max(0.02, getFitZoom());
+  const max = Math.max(min * 1.01, Math.min(MAX_ZOOM_ABSOLUTE, min * MAX_ZOOM_MULTIPLIER));
+
+  state.zoomBounds = { max, min };
+}
+
+function rubberDelta(delta, scale, minLimit = 24) {
+  const limit = Math.max(minLimit, Math.abs(scale) * 0.28);
+
+  return limit * (1 - 1 / (delta / limit + 1));
+}
+
+function rubberClamp(value, min, max, scale, minLimit = 24) {
+  if (value < min) {
+    return min - rubberDelta(min - value, scale, minLimit);
+  }
+
+  if (value > max) {
+    return max + rubberDelta(value - max, scale, minLimit);
+  }
+
+  return value;
+}
+
+function getPanBounds(zoom = state.camera.zoom) {
+  const docWidth = DOCUMENT.width * zoom;
+  const docHeight = DOCUMENT.height * zoom;
+  const horizontalCenter = (state.size.width - docWidth) * 0.5;
+  const verticalCenter = (state.size.height - docHeight) * 0.5;
+  const horizontalFits = docWidth <= state.size.width - VIEW_MARGIN * 2;
+  const verticalFits = docHeight <= state.size.height - VIEW_MARGIN * 2;
+
+  return {
+    maxX: horizontalFits ? horizontalCenter : VIEW_MARGIN,
+    maxY: verticalFits ? verticalCenter : VIEW_MARGIN,
+    minX: horizontalFits ? horizontalCenter : state.size.width - VIEW_MARGIN - docWidth,
+    minY: verticalFits ? verticalCenter : state.size.height - VIEW_MARGIN - docHeight,
+  };
+}
+
+function applyElasticPan(camera = state.camera) {
+  const bounds = getPanBounds(camera.zoom);
+
+  camera.x = rubberClamp(camera.x, bounds.minX, bounds.maxX, state.size.width);
+  camera.y = rubberClamp(camera.y, bounds.minY, bounds.maxY, state.size.height);
+}
+
+function clampCamera(camera = state.camera) {
+  const zoom = clamp(camera.zoom, state.zoomBounds.min, state.zoomBounds.max);
+  const bounds = getPanBounds(zoom);
+
+  return {
+    x: clamp(camera.x, bounds.minX, bounds.maxX),
+    y: clamp(camera.y, bounds.minY, bounds.maxY),
+    zoom,
+  };
+}
+
+function setCamera(camera, options = {}) {
+  state.camera.x = camera.x;
+  state.camera.y = camera.y;
+  state.camera.zoom = camera.zoom;
+
+  if (options.elastic !== false) {
+    applyElasticPan(state.camera);
+  }
+
+  scheduleRender();
+  updateZoomUi();
+}
+
+function centerCamera() {
+  updateZoomBounds();
+  const zoom = state.zoomBounds.min;
+  const x = (state.size.width - DOCUMENT.width * zoom) * 0.5;
+  const y = (state.size.height - DOCUMENT.height * zoom) * 0.5;
+
+  state.camera.vx = 0;
+  state.camera.vy = 0;
+  state.camera.vz = 0;
+  setCamera({ x, y, zoom }, { elastic: false });
+}
+
+function settleCamera() {
+  cancelAnimationFrame(state.settleRaf);
+
+  const tick = () => {
+    const target = clampCamera();
+    const dx = target.x - state.camera.x;
+    const dy = target.y - state.camera.y;
+    const dz = target.zoom - state.camera.zoom;
+
+    state.camera.vx = (state.camera.vx + dx * SETTLE_STIFFNESS) * SETTLE_FRICTION;
+    state.camera.vy = (state.camera.vy + dy * SETTLE_STIFFNESS) * SETTLE_FRICTION;
+    state.camera.vz = (state.camera.vz + dz * SETTLE_STIFFNESS) * SETTLE_FRICTION;
+    state.camera.x += state.camera.vx;
+    state.camera.y += state.camera.vy;
+    state.camera.zoom += state.camera.vz;
+
+    const stillMoving =
+      Math.abs(dx) > SETTLE_EPSILON ||
+      Math.abs(dy) > SETTLE_EPSILON ||
+      Math.abs(dz) > 0.0001 ||
+      Math.abs(state.camera.vx) > SETTLE_EPSILON ||
+      Math.abs(state.camera.vy) > SETTLE_EPSILON ||
+      Math.abs(state.camera.vz) > 0.0001;
+
+    if (stillMoving) {
+      scheduleRender();
+      updateZoomUi();
+      state.settleRaf = requestAnimationFrame(tick);
+      return;
+    }
+
+    state.camera.x = target.x;
+    state.camera.y = target.y;
+    state.camera.zoom = target.zoom;
+    state.camera.vx = 0;
+    state.camera.vy = 0;
+    state.camera.vz = 0;
+    state.settleRaf = 0;
+    scheduleRender();
+    updateZoomUi();
+  };
+
+  state.settleRaf = requestAnimationFrame(tick);
+}
+
+function screenToDocument(point, camera = state.camera) {
+  return {
+    x: (point.x - camera.x) / camera.zoom,
+    y: (point.y - camera.y) / camera.zoom,
+  };
+}
+
+function zoomAt(point, requestedZoom, options = {}) {
+  const before = screenToDocument(point);
+  const zoomRubber = Math.max(0.035, state.zoomBounds.min * 0.16);
+  const zoom = options.elastic === false
+    ? clamp(requestedZoom, state.zoomBounds.min, state.zoomBounds.max)
+    : rubberClamp(requestedZoom, state.zoomBounds.min, state.zoomBounds.max, state.zoomBounds.max, zoomRubber);
+  const next = {
+    x: point.x - before.x * zoom,
+    y: point.y - before.y * zoom,
+    zoom,
+  };
+
+  setCamera(next, { elastic: options.elastic !== false });
+}
+
+function getPointerPoint(event) {
+  const rect = canvas.getBoundingClientRect();
+
+  return {
+    id: event.pointerId,
+    x: event.clientX - rect.left,
+    y: event.clientY - rect.top,
+  };
+}
+
+function getActivePointers() {
+  return Array.from(state.pointers.values()).sort((first, second) => first.id - second.id);
+}
+
+function getDistance(first, second) {
+  return Math.hypot(second.x - first.x, second.y - first.y);
+}
+
+function getCenter(first, second) {
+  return {
+    x: (first.x + second.x) * 0.5,
+    y: (first.y + second.y) * 0.5,
+  };
+}
+
+function beginPan(point) {
+  state.gesture = {
+    lastX: point.x,
+    lastY: point.y,
+    type: "pan",
+  };
+}
+
+function beginPinch() {
+  const [first, second] = getActivePointers();
+
+  if (!first || !second) {
+    return;
+  }
+
+  const center = getCenter(first, second);
+
+  state.gesture = {
+    center,
+    distance: Math.max(1, getDistance(first, second)),
+    documentPoint: screenToDocument(center),
+    startCamera: { ...state.camera },
+    type: "pinch",
+  };
+}
+
+function handlePointerDown(event) {
+  event.preventDefault();
+  canvas.setPointerCapture?.(event.pointerId);
+  cancelAnimationFrame(state.settleRaf);
+  state.settleRaf = 0;
+  state.isInteracting = true;
+  canvas.classList.add("is-dragging");
+  state.pointers.set(event.pointerId, getPointerPoint(event));
+
+  if (state.pointers.size >= 2) {
+    beginPinch();
+  } else {
+    beginPan(getPointerPoint(event));
+  }
+}
+
+function handlePointerMove(event) {
+  if (!state.pointers.has(event.pointerId)) {
+    return;
+  }
+
+  event.preventDefault();
+  state.pointers.set(event.pointerId, getPointerPoint(event));
+
+  if (state.pointers.size >= 2) {
+    if (state.gesture?.type !== "pinch") {
+      beginPinch();
+    }
+
+    const [first, second] = getActivePointers();
+    const center = getCenter(first, second);
+    const distance = Math.max(1, getDistance(first, second));
+    const rawZoom = state.gesture.startCamera.zoom * (distance / state.gesture.distance);
+    const zoomRubber = Math.max(0.035, state.zoomBounds.min * 0.16);
+    const zoom = rubberClamp(rawZoom, state.zoomBounds.min, state.zoomBounds.max, state.zoomBounds.max, zoomRubber);
+    const next = {
+      x: center.x - state.gesture.documentPoint.x * zoom,
+      y: center.y - state.gesture.documentPoint.y * zoom,
+      zoom,
+    };
+
+    setCamera(next);
+    return;
+  }
+
+  if (state.gesture?.type !== "pan") {
+    beginPan(getPointerPoint(event));
+    return;
+  }
+
+  const point = getPointerPoint(event);
+  const dx = point.x - state.gesture.lastX;
+  const dy = point.y - state.gesture.lastY;
+
+  state.gesture.lastX = point.x;
+  state.gesture.lastY = point.y;
+  setCamera({
+    x: state.camera.x + dx,
+    y: state.camera.y + dy,
+    zoom: state.camera.zoom,
+  });
+}
+
+function finishPointer(event) {
+  if (state.pointers.has(event.pointerId)) {
+    state.pointers.delete(event.pointerId);
+  }
+
+  if (canvas.hasPointerCapture?.(event.pointerId)) {
+    canvas.releasePointerCapture(event.pointerId);
+  }
+
+  if (state.pointers.size >= 2) {
+    beginPinch();
+    return;
+  }
+
+  if (state.pointers.size === 1) {
+    beginPan(getActivePointers()[0]);
+    return;
+  }
+
+  state.gesture = null;
+  state.isInteracting = false;
+  canvas.classList.remove("is-dragging");
+  settleCamera();
+}
+
+function handleWheel(event) {
+  event.preventDefault();
+  cancelAnimationFrame(state.settleRaf);
+  state.settleRaf = 0;
+
+  const rect = canvas.getBoundingClientRect();
+  const point = {
+    x: event.clientX - rect.left,
+    y: event.clientY - rect.top,
+  };
+  const factor = Math.exp(-event.deltaY * 0.0016);
+
+  zoomAt(point, state.camera.zoom * factor);
+  window.clearTimeout(handleWheel.settleTimer);
+  handleWheel.settleTimer = window.setTimeout(settleCamera, 120);
+}
+
+function setZoomByNormalized(value) {
+  const t = clamp(Number(value) / 1000, 0, 1);
+  const zoom = state.zoomBounds.min * ((state.zoomBounds.max / state.zoomBounds.min) ** t);
+  const point = {
+    x: state.size.width * 0.5,
+    y: state.size.height * 0.5,
+  };
+
+  zoomAt(point, zoom, { elastic: false });
+  settleCamera();
+}
+
+function stepZoom(direction) {
+  const factor = direction > 0 ? 1.22 : 1 / 1.22;
+  const point = {
+    x: state.size.width * 0.5,
+    y: state.size.height * 0.5,
+  };
+
+  zoomAt(point, state.camera.zoom * factor);
+  settleCamera();
+}
+
+function setImageStatus(text) {
+  if (!imageStatusLabel) {
+    return;
+  }
+
+  imageStatusLabel.hidden = false;
+  imageStatusLabel.textContent = text;
+}
+
+function updateImageStatus() {
+  if (!imageStatusLabel) {
+    return;
+  }
+
+  if (!state.imageLayer) {
+    imageStatusLabel.hidden = true;
+    return;
+  }
+
+  const preview = getPreferredPreview(state.imageLayer);
+
+  imageStatusLabel.hidden = false;
+  imageStatusLabel.textContent = `${preview.longest}px`;
+}
+
+async function handleImageInputChange(event) {
+  const file = event.target.files?.[0];
+
+  if (!file) {
+    return;
+  }
+
+  const cacheKey = getFileCacheKey(file);
+  const wasCached = assetCache.has(cacheKey);
+
+  setImageStatus(wasCached ? "cache" : "preview...");
+
+  try {
+    const asset = await createImageAsset(file);
+
+    state.imageLayer = createImageLayer(asset);
+    scheduleRender();
+    updateImageStatus();
+  } catch (error) {
+    console.error(error);
+    setImageStatus("errore");
+  } finally {
+    event.target.value = "";
+  }
+}
+
+function resize() {
+  const rect = canvas.getBoundingClientRect();
+  const dpr = getRenderDpr();
+  const width = Math.max(1, Math.round(rect.width));
+  const height = Math.max(1, Math.round(rect.height));
+  const pixelWidth = Math.max(1, Math.round(width * dpr));
+  const pixelHeight = Math.max(1, Math.round(height * dpr));
+  const previousMin = state.zoomBounds.min;
+  const previousZoom = state.camera.zoom;
+
+  state.size = { dpr, height, width };
+
+  if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
+  }
+
+  updateZoomBounds();
+
+  if (!Number.isFinite(previousZoom) || previousZoom <= 0 || previousMin <= 0) {
+    centerCamera();
+  } else {
+    const zoomRatio = previousZoom / previousMin;
+    const nextZoom = clamp(state.zoomBounds.min * zoomRatio, state.zoomBounds.min, state.zoomBounds.max);
+    const center = {
+      x: width * 0.5,
+      y: height * 0.5,
+    };
+    const docCenter = screenToDocument(center);
+
+    setCamera({
+      x: center.x - docCenter.x * nextZoom,
+      y: center.y - docCenter.y * nextZoom,
+      zoom: nextZoom,
+    }, { elastic: false });
+    settleCamera();
+  }
+
+  scheduleRender();
+}
+
+function drawChecker(ctx, x, y, width, height, zoom) {
+  const size = Math.max(8, Math.min(24, 16 * zoom));
+  const cols = Math.ceil(width / size);
+  const rows = Math.ceil(height / size);
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x, y, width, height);
+  ctx.clip();
+
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) {
+      ctx.fillStyle = (row + col) % 2 === 0 ? "#f8f5ed" : "#eee9dd";
+      ctx.fillRect(x + col * size, y + row * size, size, size);
+    }
+  }
+
+  ctx.restore();
+}
+
+function drawImageLayer(ctx, layer) {
+  const preview = getPreferredPreview(layer);
+  const { x, y, zoom } = state.camera;
+  const targetX = x + layer.x * zoom;
+  const targetY = y + layer.y * zoom;
+  const targetWidth = layer.width * zoom;
+  const targetHeight = layer.height * zoom;
+
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = state.isInteracting ? "medium" : "high";
+  ctx.drawImage(preview.bitmap, targetX, targetY, targetWidth, targetHeight);
+
+  if (!state.isInteracting) {
+    ctx.strokeStyle = "rgba(16, 17, 15, 0.18)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(targetX + 0.5, targetY + 0.5, targetWidth - 1, targetHeight - 1);
+  }
+
+  ctx.restore();
+}
+
+function drawDocument(ctx) {
+  const { x, y, zoom } = state.camera;
+  const width = DOCUMENT.width * zoom;
+  const height = DOCUMENT.height * zoom;
+
+  ctx.save();
+  ctx.shadowColor = "rgba(0, 0, 0, 0.34)";
+  ctx.shadowBlur = 28;
+  ctx.shadowOffsetY = 16;
+  ctx.fillStyle = "#0e100d";
+  ctx.fillRect(x - 1, y - 1, width + 2, height + 2);
+  ctx.restore();
+
+  drawChecker(ctx, x, y, width, height, zoom);
+
+  if (state.imageLayer) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x, y, width, height);
+    ctx.clip();
+    drawImageLayer(ctx, state.imageLayer);
+    ctx.restore();
+  }
+
+  ctx.save();
+  ctx.strokeStyle = "rgba(20, 21, 18, 0.22)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x + 0.5, y + 0.5, width - 1, height - 1);
+
+  if (zoom > state.zoomBounds.min * 1.35) {
+    const gridStep = 128 * zoom;
+
+    ctx.beginPath();
+    for (let gridX = x + gridStep; gridX < x + width; gridX += gridStep) {
+      ctx.moveTo(Math.round(gridX) + 0.5, y);
+      ctx.lineTo(Math.round(gridX) + 0.5, y + height);
+    }
+    for (let gridY = y + gridStep; gridY < y + height; gridY += gridStep) {
+      ctx.moveTo(x, Math.round(gridY) + 0.5);
+      ctx.lineTo(x + width, Math.round(gridY) + 0.5);
+    }
+    ctx.strokeStyle = "rgba(21, 22, 19, 0.08)";
+    ctx.stroke();
+  }
+
+  ctx.strokeStyle = "rgba(125, 211, 199, 0.72)";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x - 2, y - 2, width + 4, height + 4);
+  ctx.restore();
+}
+
+function render() {
+  state.raf = 0;
+
+  const { dpr, height, width } = state.size;
+
+  context.setTransform(dpr, 0, 0, dpr, 0, 0);
+  context.clearRect(0, 0, width, height);
+  context.fillStyle = "#171814";
+  context.fillRect(0, 0, width, height);
+  drawDocument(context);
+}
+
+function scheduleRender() {
+  if (state.raf) {
+    return;
+  }
+
+  state.raf = requestAnimationFrame(render);
+}
+
+function updateZoomUi() {
+  const zoom = state.camera.zoom;
+  const percentage = Math.round((zoom / state.zoomBounds.min) * 100);
+  const min = state.zoomBounds.min;
+  const max = state.zoomBounds.max;
+  const t = max > min
+    ? Math.log(zoom / min) / Math.log(max / min)
+    : 0;
+
+  if (zoomLabel) {
+    zoomLabel.textContent = `${percentage}%`;
+  }
+
+  if (zoomRange && document.activeElement !== zoomRange) {
+    zoomRange.value = String(Math.round(clamp(t, 0, 1) * 1000));
+  }
+
+  updateImageStatus();
+}
+
+function bindEvents() {
+  canvas.addEventListener("pointerdown", handlePointerDown);
+  canvas.addEventListener("pointermove", handlePointerMove);
+  canvas.addEventListener("pointerup", finishPointer);
+  canvas.addEventListener("pointercancel", finishPointer);
+  canvas.addEventListener("wheel", handleWheel, { passive: false });
+  window.addEventListener("resize", resize, { passive: true });
+  resetButton?.addEventListener("click", centerCamera);
+  imageUploadButton?.addEventListener("click", () => imageInput?.click());
+  imageInput?.addEventListener("change", handleImageInputChange);
+  zoomInButton?.addEventListener("click", () => stepZoom(1));
+  zoomOutButton?.addEventListener("click", () => stepZoom(-1));
+  zoomRange?.addEventListener("input", () => setZoomByNormalized(zoomRange.value));
+}
+
+function init() {
+  if (!canvas || !context) {
+    throw new Error("Viewport canvas non disponibile.");
+  }
+
+  if (documentSizeLabel) {
+    documentSizeLabel.textContent = `${DOCUMENT.width} x ${DOCUMENT.height}`;
+  }
+
+  bindEvents();
+  resize();
+  centerCamera();
+  updateImageStatus();
+}
+
+init();

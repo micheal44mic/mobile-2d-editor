@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>Mobile 2D Editor</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="app-shell" data-app-shell>
+      <section class="editor-stage" aria-label="Editor 2D">
+        <canvas class="editor-viewport" data-editor-viewport aria-label="Viewport documento"></canvas>
+
+        <div class="top-strip" aria-label="Stato documento">
+          <span class="status-pill" data-document-size>1536 x 1536</span>
+          <span class="status-pill" data-zoom-label>100%</span>
+          <span class="status-pill" data-image-status hidden></span>
+          <input class="file-input" data-image-input type="file" accept="image/*" aria-label="Carica immagine">
+          <button class="icon-button" type="button" data-image-upload aria-label="Carica immagine">
+            <span aria-hidden="true">＋</span>
+          </button>
+          <button class="icon-button" type="button" data-reset-view aria-label="Centra documento">
+            <span aria-hidden="true">⌂</span>
+          </button>
+        </div>
+
+        <div class="bottom-strip" aria-label="Controlli zoom">
+          <button class="tool-button" type="button" data-zoom-out aria-label="Zoom out">−</button>
+          <input class="zoom-range" data-zoom-range type="range" min="0" max="1000" value="0" aria-label="Zoom">
+          <button class="tool-button" type="button" data-zoom-in aria-label="Zoom in">+</button>
+        </div>
+      </section>
+    </main>
+
+    <script defer src="./src/app.js"></script>
+  </body>
+</html>
